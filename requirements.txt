@@ -1,0 +1,10 @@
+torch>=2.0.0
+numpy>=1.22.0
+matplotlib>=3.5.0
+pygame>=2.1.0
+scipy>=1.8.0
+pyyaml>=6.0
+tqdm>=4.64.0
+opencv-python>=4.5.0
+shapely>=1.8.0
+casadi>=3.5.5 

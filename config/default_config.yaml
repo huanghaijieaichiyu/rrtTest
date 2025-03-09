@@ -1,0 +1,159 @@
+# 默认配置文件
+
+# 项目基础配置
+project:
+  # 项目名称
+  name: "RRT-PyTorch-CarSim"
+  # 项目版本
+  version: "0.1.0"
+  # 数据路径
+  data_path: "data/"
+  # 结果保存路径
+  results_path: "results/"
+  # 日志路径
+  log_path: "logs/"
+  # 日志级别 (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+  log_level: "INFO"
+  # 随机种子
+  random_seed: 42
+  # 是否使用GPU
+  use_gpu: true
+
+# 环境配置
+environment:
+  # 环境尺寸
+  width: 100.0
+  height: 100.0
+  # 是否使用随机障碍物
+  random_obstacles: false
+  # 随机障碍物数量
+  num_random_obstacles: 10
+  # 障碍物类型概率 (圆形:矩形)
+  obstacle_type_ratio: 0.7
+  # 地图文件路径 (如果不使用随机障碍物)
+  map_path: "data/maps/default_map.yaml"
+
+# RRT算法配置
+rrt:
+  # 算法类型 (rrt, rrt_star, informed_rrt)
+  algorithm: "rrt_star"
+  # 步长
+  step_size: 5.0
+  # 最大迭代次数
+  max_iterations: 1000
+  # 目标采样率
+  goal_sample_rate: 0.1
+  # 搜索半径
+  search_radius: 50.0
+  # 是否采用自适应采样
+  adaptive_sampling: true
+  # 自适应采样参数
+  adaptive_params:
+    min_step_size: 1.0
+    max_step_size: 10.0
+    steering_factor: 0.5
+  # 是否绘制搜索过程
+  plot_search_process: false
+  # 是否保存结果
+  save_results: true
+  # 结果保存路径
+  results_file: "results/rrt_results.json"
+
+# PyTorch模型配置
+model:
+  # 模型类型 (mlp, cnn, rnn)
+  type: "mlp"
+  # 隐藏层大小
+  hidden_sizes: [128, 64]
+  # 激活函数 (relu, tanh, sigmoid)
+  activation: "relu"
+  # 是否使用批标准化
+  use_batch_norm: true
+  # 是否使用dropout
+  use_dropout: true
+  # Dropout概率
+  dropout_prob: 0.2
+  # 学习率
+  learning_rate: 0.001
+  # 批大小
+  batch_size: 32
+  # 训练轮数
+  epochs: 100
+  # 优化器 (adam, sgd, rmsprop)
+  optimizer: "adam"
+  # 损失函数 (mse, cross_entropy, huber)
+  loss_function: "mse"
+  # 早停策略
+  early_stopping: true
+  # 早停耐心值
+  patience: 10
+  # 模型保存路径
+  save_path: "data/model_weights/model.pt"
+  # 是否加载预训练模型
+  load_pretrained: false
+  # 预训练模型路径
+  pretrained_path: "data/model_weights/pretrained.pt"
+
+# 仿真配置
+simulation:
+  # 仿真类型 (pytorch_only, carsim, hybrid)
+  type: "hybrid"
+  # 仿真步长
+  step_size: 0.1
+  # 最大仿真步数
+  max_steps: 1000
+  # 是否使用真实物理模型
+  use_physics: true
+  # 物理模型参数
+  physics_params:
+    friction: 0.8
+    gravity: 9.8
+  # 是否渲染仿真
+  render: true
+  # 渲染帧率
+  render_fps: 30
+  # 是否保存仿真结果
+  save_results: true
+  # 结果保存路径
+  results_path: "results/simulation/"
+  # 是否保存视频
+  save_video: false
+  # 视频保存路径
+  video_path: "results/videos/"
+  # 是否使用GUI
+  use_gui: true
+
+# 可视化配置
+visualization:
+  # 图形大小
+  figsize: [10, 8]
+  # 是否显示网格
+  show_grid: true
+  # 是否显示障碍物
+  show_obstacles: true
+  # 是否显示路径
+  show_path: true
+  # 是否显示搜索树
+  show_tree: true
+  # 路径颜色
+  path_color: "blue"
+  # 树颜色
+  tree_color: "green"
+  # 树透明度
+  tree_alpha: 0.3
+  # 障碍物颜色
+  obstacle_color: "red"
+  # 障碍物透明度
+  obstacle_alpha: 0.5
+  # 是否保存图形
+  save_figures: true
+  # 图形保存路径
+  figures_path: "results/figures/"
+  # 图形保存DPI
+  figure_dpi: 300
+  # 是否创建动画
+  create_animation: true
+  # 动画帧率
+  animation_fps: 30
+  # 动画保存路径
+  animation_path: "results/animations/" 

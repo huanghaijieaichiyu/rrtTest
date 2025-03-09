@@ -1,0 +1,127 @@
+# CarSim配置文件
+
+# CarSim软件路径
+carsim_path: "C:/Program Files/CarSim"
+
+# 车辆参数
+vehicle_params:
+  # 车辆质量 (kg)
+  mass: 1500
+  # 轴距 (m)
+  wheelbase: 2.8
+  # 宽度 (m)
+  width: 1.8
+  # 长度 (m)
+  length: 4.5
+  # 最大转向角 (rad)
+  max_steer_angle: 0.6
+  # 最大加速度 (m/s^2)
+  max_acceleration: 3.0
+  # 最大减速度 (m/s^2)
+  max_deceleration: 8.0
+  # 最大速度 (m/s)
+  max_speed: 30.0
+
+# 仿真参数
+simulation_params:
+  # 时间步长 (s)
+  step_size: 0.01
+  # 实时因子 (1.0表示实时仿真)
+  real_time_factor: 1.0
+  # 仿真持续时间 (s)
+  duration: 60.0
+  # 输出频率 (Hz)
+  output_frequency: 10
+  # 是否启用碰撞检测
+  collision_detection: true
+  # 是否启用路面摩擦
+  enable_road_friction: true
+  # 路面摩擦系数
+  road_friction: 0.8
+
+# 环境参数
+environment:
+  # 环境大小
+  width: 200.0
+  height: 200.0
+
+  # 障碍物列表
+  obstacles:
+    - x: 50.0
+      y: 50.0
+      obstacle_type: "circle"
+      radius: 10.0
+
+    - x: 100.0
+      y: 80.0
+      obstacle_type: "circle"
+      radius: 15.0
+
+    - x: 150.0
+      y: 40.0
+      obstacle_type: "rectangle"
+      width: 20.0
+      height: 30.0
+      angle: 0.5
+
+# 路径规划参数
+path_planning:
+  # 算法类型：rrt, rrt_star, informed_rrt
+  algorithm: "rrt_star"
+  # 计算步长
+  step_size: 5.0
+  # 最大迭代次数
+  max_iterations: 1000
+  # 目标采样率
+  goal_sample_rate: 0.1
+  # 搜索半径
+  search_radius: 100.0
+  # 最大规划时间 (s)
+  max_planning_time: 5.0
+
+# 控制参数
+control:
+  # 控制器类型：pure_pursuit, stanley, mpc
+  controller: "pure_pursuit"
+  # 前瞻距离 (m)，用于Pure Pursuit控制器
+  lookahead_distance: 5.0
+  # 控制增益，用于Stanley控制器
+  k_gain: 0.5
+  # MPC预测时域
+  prediction_horizon: 10
+  # MPC控制时域
+  control_horizon: 5
+  # 轨迹跟踪误差权重
+  tracking_error_weight: 1.0
+  # 控制输入变化权重
+  control_effort_weight: 0.1
+
+# 机器学习参数
+ml:
+  # 模型类型：dqn, ppo, sac, etc.
+  model_type: "ppo"
+  # 隐藏层大小
+  hidden_sizes: [256, 256]
+  # 学习率
+  learning_rate: 0.0003
+  # 批大小
+  batch_size: 64
+  # 折扣因子
+  gamma: 0.99
+  # 模型检查点保存路径
+  checkpoint_path: "../data/model_weights/ppo_model.pt"
+  # 是否使用GPU
+  use_gpu: true
+
+# 输出配置
+output:
+  # 结果保存路径
+  save_path: "../data/results/"
+  # 是否保存轨迹
+  save_trajectory: true
+  # 是否保存模型
+  save_model: true
+  # 是否生成可视化
+  generate_visualization: true
+  # 是否生成动画
+  generate_animation: true
