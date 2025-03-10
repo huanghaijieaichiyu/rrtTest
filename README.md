@@ -1,136 +1,184 @@
-# RRT Path Planning Project
+# RRT 路径规划与仿真系统
 
-基于 RRT（Rapidly-exploring Random Tree）算法的路径规划项目，包含多种 RRT 变体实现和可视化工具。
+这是一个基于 RRT（Rapidly-exploring Random Tree）算法的路径规划系统，包含完整的路径规划和可视化仿真功能。系统使用 Pygame 实现了一个交互式的仿真环境，支持实时路径跟踪和车辆动力学模拟。
 
-## 功能特点
+## 主要特点
 
-- 支持多种 RRT 算法变体：
-  - 基础 RRT
-  - RRT*
-  - Informed RRT*
-  - 基于深度学习的神经网络增强 RRT
-- 使用 Pygame 进行实时可视化
-- 支持自定义环境创建和保存
-- 提供神经网络模型训练功能
+- 基于 RRT* 算法的路径规划
+- 实时交互式仿真环境
+- 多种路径跟踪控制算法（PID、MPC、LQR）
+- 完整的车辆动力学模型
+- 碰撞检测和避障功能
+- 支持动态路径重规划
 
-## 安装
+## 许可证
 
-1. 克隆仓库：
-```bash
-git clone https://github.com/yourusername/rrt-path-planning.git
-cd rrt-path-planning
+本项目采用 Apache License 2.0 许可证。详细信息请参见 [LICENSE](LICENSE) 文件。
+
+```
+Copyright 2024 RRT Path Planning and Simulation System
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
 ```
 
-2. 安装依赖：
-```bash
-pip install -r requirements.txt
-```
-
-## 使用方法
-
-项目提供统一的命令行接口，支持以下主要功能：
-
-### 1. 运行路径规划算法
+## 安装依赖
 
 ```bash
-# 使用 RRT* 算法（默认）
-python main.py run
-
-# 指定算法、起点和终点
-python main.py run --algorithm rrt_star --start 10 10 --goal 90 90
-
-# 使用自定义地图
-python main.py run --algorithm informed_rrt --map maps/custom_map.json
-
-# 使用神经网络增强的 RRT
-python main.py run --algorithm neural_rrt --model-path results/models/model.pth
-
-# 可视化执行过程
-python main.py run --visualize
-
-# 保存规划路径
-python main.py run --save-path results/paths/path.json
+pip install numpy pygame matplotlib shapely pyyaml
 ```
 
-可用参数：
-- `--algorithm`: 选择算法 [rrt, rrt_star, informed_rrt, neural_rrt]
-- `--start`: 起点坐标，例如 "10 10"
-- `--goal`: 终点坐标，例如 "90 90"
-- `--map`: 地图文件路径
-- `--model-path`: 神经网络模型路径（仅用于 neural_rrt）
-- `--iterations`: 最大迭代次数
-- `--save-path`: 保存路径的文件路径
-- `--visualize`: 是否可视化执行过程
+## 核心功能演示
 
-### 2. 训练神经网络增强的 RRT
+系统的核心演示程序是 `simulation/pygame_simulator.py`，它提供了一个完整的交互式仿真环境。
 
-```bash
-# 使用默认参数训练
-python main.py train
+### 基本用法
 
-# 自定义训练参数
-python main.py train --num-episodes 2000 --num-epochs 200 --batch-size 64
+```python
+from simulation.environment import Environment
+from simulation.pygame_simulator import PygameSimulator
+from rrt.rrt_star import RRTStar
 
-# 指定保存目录和设备
-python main.py train --save-dir results/my_models --device cuda
+# 创建环境
+env = Environment(width=100.0, height=100.0)
+
+# 添加一些障碍物
+env.add_obstacle(x=30, y=30, obstacle_type="circle", radius=5)
+env.add_obstacle(x=70, y=60, obstacle_type="rectangle", width=10, height=10)
+
+# 创建仿真器
+simulator = PygameSimulator()
+simulator.set_environment(env)
+
+# 设置起点和终点
+start = (10, 10)
+goal = (90, 90)
+
+# 创建路径规划器
+planner = RRTStar(
+    start=start,
+    goal=goal,
+    env=env,
+    max_iterations=1000,
+    goal_sample_rate=0.1
+)
+
+# 规划路径
+path = planner.plan()
+
+# 执行仿真
+if path:
+    simulator.execute_path(path)
 ```
 
-可用参数：
-- `--num-episodes`: 训练数据收集的路径数量
-- `--num-epochs`: 训练轮数
-- `--batch-size`: 批次大小
-- `--learning-rate`: 学习率
-- `--save-dir`: 模型保存目录
-- `--device`: 训练设备 (cuda/cpu)
-- `--visualize`: 是否可视化训练过程
+### 交互控制
 
-### 3. 创建测试环境
+在仿真过程中，您可以使用以下按键进行交互：
 
-```bash
-# 创建随机环境
-python main.py create-env --save-path maps/random_map.json
+- **空格键**：暂停/继续仿真
+- **R 键**：重置车辆位置到起点
+- **C 键**：切换控制方法（在 default、pid、mpc、lqr 之间切换）
+- **T 键**：重新规划路径并重置车辆位置
+- **ESC 键**：退出仿真
 
-# 自定义环境参数
-python main.py create-env --width 200 --height 200 --num-circles 8 --num-rectangles 5 --save-path maps/large_map.json
+### 控制方法
 
-# 可视化创建的环境
-python main.py create-env --save-path maps/map.json --visualize
-```
+系统支持多种路径跟踪控制方法：
 
-可用参数：
-- `--width`: 环境宽度
-- `--height`: 环境高度
-- `--num-circles`: 圆形障碍物数量
-- `--num-rectangles`: 矩形障碍物数量
-- `--save-path`: 保存环境的文件路径
-- `--visualize`: 是否可视化环境
+1. **默认控制器**：基础的路径跟踪算法
+2. **PID 控制器**：经典 PID 控制，适合一般场景
+3. **MPC 控制器**：模型预测控制，可以预测和优化未来轨迹
+4. **LQR 控制器**：线性二次型调节器，提供最优控制
+
+### 安全特性
+
+- 实时碰撞检测
+- 碰撞警告提示
+- 自动停车机制
+- 路径重规划功能
 
 ## 项目结构
 
 ```
 .
-├── main.py              # 主程序入口
-├── rrt/                 # RRT 算法实现
-│   ├── rrt_base.py     # 基础 RRT
-│   ├── rrt_star.py     # RRT*
-│   └── informed_rrt.py # Informed RRT*
-├── ml/                  # 机器学习相关
-│   └── models/         # 神经网络模型
-├── simulation/         # 仿真和可视化
-│   ├── environment.py  # 环境定义
-│   └── pygame_simulator.py # Pygame 可视化
-├── examples/           # 示例脚本
-├── config/            # 配置文件
-├── results/           # 结果保存
-│   ├── models/       # 训练模型
-│   └── paths/        # 规划路径
-└── maps/             # 环境地图
+├── rrt/                    # RRT 算法实现
+│   ├── rrt_base.py         # 基础 RRT 算法
+│   └── rrt_star.py         # RRT* 算法
+│
+├── simulation/             # 仿真环境
+│   ├── environment.py      # 环境定义
+│   └── pygame_simulator.py # 核心仿真器实现
+│
+└── examples/               # 示例脚本
+    └── demo.py            # 演示脚本
 ```
+
+## 高级功能
+
+### 1. 自定义环境
+
+您可以通过 `Environment` 类创建自定义环境：
+
+```python
+env = Environment(width=100.0, height=100.0)
+
+# 添加圆形障碍物
+env.add_obstacle(x=50, y=50, obstacle_type="circle", radius=5)
+
+# 添加矩形障碍物
+env.add_obstacle(x=30, y=30, obstacle_type="rectangle", 
+                width=10, height=10, angle=0.5)
+```
+
+### 2. 调整控制参数
+
+可以通过修改控制器参数来优化性能：
+
+```python
+simulator.follower.pid_params = {
+    'kp_steer': 0.5,    # 转向角度比例系数
+    'ki_steer': 0.05,   # 转向角度积分系数
+    'kd_steer': 0.1,    # 转向角度微分系数
+    'kp_speed': 0.3,    # 速度比例系数
+    'ki_speed': 0.01,   # 速度积分系数
+    'kd_speed': 0.05    # 速度微分系数
+}
+```
+
+### 3. 可视化结果
+
+仿真完成后可以查看详细的运行数据：
+
+```python
+results = simulator.get_simulation_results()
+simulator.visualize_results(results)
+```
+
+## 注意事项
+
+- 确保环境中的障碍物不会完全阻断起点到终点的可行路径
+- 在复杂环境中，可能需要增加 RRT* 算法的迭代次数
+- 不同的控制方法适合不同的场景，建议尝试不同的控制器
+- 如果发生碰撞，系统会自动停止并提供重置选项
+
+## 故障排除
+
+如果遇到问题，可以尝试：
+
+1. 增加 `max_iterations` 参数来提高路径规划成功率
+2. 调整 `goal_sample_rate` 来平衡探索和利用
+3. 修改控制器参数以获得更好的跟踪效果
+4. 确保环境中的障碍物配置合理
 
 ## 贡献
 
-欢迎提交 Issue 和 Pull Request。
-
-## 许可证
-
-本项目采用 MIT 许可证。详见 [LICENSE](LICENSE) 文件。 
+欢迎提交 Issue 和 Pull Request 来帮助改进这个项目。 

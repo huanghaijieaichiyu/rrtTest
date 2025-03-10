@@ -171,6 +171,16 @@ class RRTStar(RRT):
         返回:
             规划得到的路径，由坐标点组成的列表
         """
+        # 增加搜索半径，提高成功率
+        self.search_radius = max(
+            self.search_radius,
+            np.hypot(self.goal.x - self.start.x,
+                     self.goal.y - self.start.y) * 0.5
+        )
+
+        # 增加重连接因子，提高路径质量
+        self.rewire_factor = max(self.rewire_factor, 2.0)
+
         for i in range(self.max_iterations):
             # 随机采样
             if np.random.random() < self.goal_sample_rate:
@@ -204,7 +214,26 @@ class RRTStar(RRT):
                             self._connect_to_goal(new_node)
                             return self._extract_path()
 
+            # 每隔一定迭代次数，尝试直接连接到目标
+            if i % 100 == 0:
+                # 找到离目标最近的节点
+                closest_ind = self._get_nearest_node_index(self.goal)
+                closest_node = self.node_list[closest_ind]
+
+                # 尝试直接连接
+                if self._is_near_goal(closest_node) and self._check_segment(closest_node, self.goal):
+                    self._connect_to_goal(closest_node)
+                    return self._extract_path()
+
         # 达到最大迭代次数但未找到路径
+        # 尝试连接最近的节点到目标
+        closest_ind = self._get_nearest_node_index(self.goal)
+        closest_node = self.node_list[closest_ind]
+
+        if self._check_segment(closest_node, self.goal):
+            self._connect_to_goal(closest_node)
+            return self._extract_path()
+
         return []
 
 

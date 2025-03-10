@@ -13,9 +13,9 @@
 
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.patches import Circle, Polygon
 from typing import List, Optional, Tuple, Union
 from shapely.geometry import Point, LineString
-from matplotlib.patches import Circle, Polygon
 from dataclasses import dataclass
 
 
@@ -37,113 +37,6 @@ class RectangleObstacle:
     height: float
     angle: float = 0.0
     type: str = 'rectangle'
-
-
-class Obstacle:
-    """障碍物基类"""
-
-    def __init__(self, x: float, y: float):
-        self.x = x
-        self.y = y
-
-    def check_collision(self, point: Tuple[float, float]) -> bool:
-        """检查点是否与障碍物碰撞"""
-        raise NotImplementedError("子类必须实现此方法")
-
-    def check_line_collision(
-        self,
-        start: Tuple[float, float],
-        end: Tuple[float, float]
-    ) -> bool:
-        """检查线段是否与障碍物碰撞"""
-        raise NotImplementedError("子类必须实现此方法")
-
-    def plot(self, ax) -> None:
-        """在给定的坐标轴上绘制障碍物"""
-        raise NotImplementedError("子类必须实现此方法")
-
-
-class CircleObstacle(Obstacle):
-    """圆形障碍物"""
-
-    def __init__(self, x: float, y: float, radius: float):
-        super().__init__(x, y)
-        self.radius = radius
-        # 使用Shapely创建几何表示
-        self.geometry = Point(x, y).buffer(radius)
-
-    def check_collision(self, point: Tuple[float, float]) -> bool:
-        """检查点是否与圆形障碍物碰撞"""
-        # 计算点到障碍物中心的距离
-        dist = np.hypot(point[0] - self.x, point[1] - self.y)
-        return dist <= self.radius
-
-    def check_line_collision(self, start: Tuple[float, float], end: Tuple[float, float]) -> bool:
-        """检查线段是否与圆形障碍物碰撞"""
-        # 使用Shapely检查线段与圆的相交
-        line = LineString([start, end])
-        return line.intersects(self.geometry)
-
-    def plot(self, ax) -> None:
-        """在给定的坐标轴上绘制圆形障碍物"""
-        circle = plt.Circle((self.x, self.y), self.radius,
-                            color='r', alpha=0.5)
-        ax.add_patch(circle)
-
-
-class RectangleObstacle(Obstacle):
-    """矩形障碍物"""
-
-    def __init__(self, x: float, y: float, width: float, height: float, angle: float = 0.0):
-        super().__init__(x, y)
-        self.width = width
-        self.height = height
-        self.angle = angle  # 弧度
-
-        # 计算四个角点
-        self._compute_corners()
-
-        # 使用Shapely创建几何表示
-        from shapely.geometry import Polygon
-        self.geometry = Polygon(self.corners)
-
-    def _compute_corners(self) -> None:
-        """计算矩形的四个角点坐标"""
-        # 未旋转时的半宽和半高
-        hw, hh = self.width / 2, self.height / 2
-
-        # 未旋转时的四个角点（相对于中心）
-        corners_rel = [(-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh)]
-
-        # 应用旋转
-        cos_a, sin_a = np.cos(self.angle), np.sin(self.angle)
-        corners = []
-        for x_rel, y_rel in corners_rel:
-            # 旋转变换
-            x_rot = x_rel * cos_a - y_rel * sin_a
-            y_rot = x_rel * sin_a + y_rel * cos_a
-            # 平移到实际位置
-            corners.append((self.x + x_rot, self.y + y_rot))
-
-        self.corners = corners
-
-    def check_collision(self, point: Tuple[float, float]) -> bool:
-        """检查点是否与矩形障碍物碰撞"""
-        # 使用Shapely检查点是否在多边形内
-        p = Point(point)
-        return p.within(self.geometry) or p.touches(self.geometry)
-
-    def check_line_collision(self, start: Tuple[float, float], end: Tuple[float, float]) -> bool:
-        """检查线段是否与矩形障碍物碰撞"""
-        # 使用Shapely检查线段与多边形的相交
-        line = LineString([start, end])
-        return line.intersects(self.geometry)
-
-    def plot(self, ax) -> None:
-        """在给定的坐标轴上绘制矩形障碍物"""
-        from matplotlib.patches import Polygon
-        rect = Polygon(self.corners, closed=True, color='r', alpha=0.5)
-        ax.add_patch(rect)
 
 
 class Environment:
@@ -174,6 +67,49 @@ class Environment:
         # 如果提供了地图文件，从文件加载环境
         if map_path:
             self.load_map(map_path)
+
+    def get_min_distance(self, x: float, y: float) -> float:
+        """
+        计算点到所有障碍物的最小距离
+
+        参数:
+            x: 点的x坐标
+            y: 点的y坐标
+
+        返回:
+            到最近障碍物的距离
+        """
+        if not self.obstacles:
+            return float('inf')
+
+        min_dist = float('inf')
+        for obstacle in self.obstacles:
+            if isinstance(obstacle, CircleObstacle):
+                # 计算点到圆心的距离
+                dist = ((x - obstacle.x) ** 2 + (y - obstacle.y) ** 2) ** 0.5
+                # 减去圆的半径得到到圆边界的距离
+                dist = max(0.0, dist - obstacle.radius)
+                min_dist = min(min_dist, dist)
+            elif isinstance(obstacle, RectangleObstacle):
+                # 计算点到矩形中心的距离
+                dx = abs(x - obstacle.x) - obstacle.width / 2
+                dy = abs(y - obstacle.y) - obstacle.height / 2
+
+                if dx <= 0 and dy <= 0:
+                    # 点在矩形内部
+                    min_dist = 0.0
+                    break
+                elif dx <= 0:
+                    # 点在矩形的上方或下方
+                    min_dist = min(min_dist, max(0.0, dy))
+                elif dy <= 0:
+                    # 点在矩形的左侧或右侧
+                    min_dist = min(min_dist, max(0.0, dx))
+                else:
+                    # 点在矩形的对角方向
+                    min_dist = min(min_dist, (dx * dx + dy * dy) ** 0.5)
+
+        return min_dist
 
     def add_obstacle(
         self,
@@ -222,11 +158,11 @@ class Environment:
             是否发生碰撞
         """
         x, y = point
-        
+
         # 检查是否在环境边界内
         if not (0 <= x <= self.width and 0 <= y <= self.height):
             return True
-        
+
         # 检查是否与障碍物碰撞
         for obstacle in self.obstacles:
             if isinstance(obstacle, CircleObstacle):
@@ -239,12 +175,16 @@ class Environment:
             else:
                 # 矩形障碍物碰撞检测（简化版，不考虑旋转）
                 if (abs(x - obstacle.x) <= obstacle.width / 2 and
-                    abs(y - obstacle.y) <= obstacle.height / 2):
+                        abs(y - obstacle.y) <= obstacle.height / 2):
                     return True
-        
+
         return False
 
-    def check_segment_collision(self, start: Tuple[float, float], end: Tuple[float, float]) -> bool:
+    def check_segment_collision(
+        self,
+        start: Tuple[float, float],
+        end: Tuple[float, float]
+    ) -> bool:
         """
         检查线段是否与任意障碍物碰撞
 
@@ -253,33 +193,65 @@ class Environment:
             end: 线段终点坐标 (x, y)
 
         返回:
-            如果无碰撞返回True，否则返回False
+            是否发生碰撞
         """
-        # 检查端点是否超出边界
-        if (start[0] < 0 or start[0] > self.width or
-            start[1] < 0 or start[1] > self.height or
-            end[0] < 0 or end[0] > self.width or
-                end[1] < 0 or end[1] > self.height):
-            return False
+        # 创建线段的几何表示
+        line = LineString([start, end])
 
         # 检查是否与任意障碍物碰撞
-        for obs in self.obstacles:
-            if isinstance(obs, CircleObstacle):
-                # 圆形障碍物碰撞检测
-                dist = np.sqrt(
-                    (start[0] - obs.x) ** 2 + (start[1] - obs.y) ** 2
-                )
-                if dist <= obs.radius:
+        for obstacle in self.obstacles:
+            if isinstance(obstacle, CircleObstacle):
+                # 创建圆形障碍物的几何表示
+                circle = Point(obstacle.x, obstacle.y).buffer(obstacle.radius)
+                if line.intersects(circle):
                     return True
-            elif isinstance(obs, RectangleObstacle):
-                # 矩形障碍物碰撞检测（简化版，不考虑旋转）
-                if (abs(start[0] - obs.x) <= obs.width / 2 and
-                    abs(start[1] - obs.y) <= obs.height / 2) or \
-                   (abs(end[0] - obs.x) <= obs.width / 2 and
-                    abs(end[1] - obs.y) <= obs.height / 2):
+            else:
+                # 创建矩形障碍物的几何表示（简化版，不考虑旋转）
+                x_min = obstacle.x - obstacle.width / 2
+                x_max = obstacle.x + obstacle.width / 2
+                y_min = obstacle.y - obstacle.height / 2
+                y_max = obstacle.y + obstacle.height / 2
+                rect = LineString([
+                    (x_min, y_min),
+                    (x_max, y_min),
+                    (x_max, y_max),
+                    (x_min, y_max),
+                    (x_min, y_min)
+                ])
+                if line.intersects(rect):
                     return True
 
         return False
+
+    def to_grid(self, grid_size: Tuple[int, int] = (64, 64)) -> np.ndarray:
+        """
+        将环境转换为栅格表示
+
+        参数:
+            grid_size: 栅格大小 (width, height)
+
+        返回:
+            栅格地图，0表示空闲，1表示障碍物
+        """
+        grid_width, grid_height = grid_size
+        grid = np.zeros((grid_height, grid_width))
+
+        # 计算栅格分辨率
+        res_x = self.width / grid_width
+        res_y = self.height / grid_height
+
+        # 遍历每个栅格
+        for i in range(grid_height):
+            for j in range(grid_width):
+                # 计算栅格中心点坐标
+                x = (j + 0.5) * res_x
+                y = (i + 0.5) * res_y
+
+                # 检查是否与障碍物碰撞
+                if self.check_collision((x, y)):
+                    grid[i, j] = 1
+
+        return grid
 
     def load_map(self, map_path: str) -> None:
         """
@@ -356,9 +328,14 @@ class Environment:
         """绘制所有障碍物"""
         for obs in self.obstacles:
             if isinstance(obs, CircleObstacle):
-                obs.plot(ax)
+                circle = plt.Circle((obs.x, obs.y), obs.radius,
+                                    color='r', alpha=0.5)
+                ax.add_patch(circle)
             elif isinstance(obs, RectangleObstacle):
-                obs.plot(ax)
+                from matplotlib.patches import Polygon
+                rect = Polygon(self._compute_corners(
+                    obs), closed=True, color='r', alpha=0.5)
+                ax.add_patch(rect)
 
     def visualize(self, figsize: Tuple[int, int] = (10, 8)) -> None:
         """可视化整个环境"""
@@ -425,39 +402,6 @@ class Environment:
 
         plt.show()
 
-    def to_grid(
-        self,
-        grid_size: Tuple[int, int] = (64, 64)
-    ) -> np.ndarray:
-        """
-        将环境转换为栅格表示
-
-        参数:
-            grid_size: 栅格大小 (width, height)
-
-        返回:
-            栅格化的环境表示，0表示空闲，1表示障碍物
-        """
-        grid_width, grid_height = grid_size
-        grid = np.zeros((grid_height, grid_width), dtype=np.float32)
-        
-        # 计算栅格分辨率
-        cell_width = self.width / grid_width
-        cell_height = self.height / grid_height
-        
-        # 对每个栅格进行采样
-        for i in range(grid_height):
-            for j in range(grid_width):
-                # 计算栅格中心点坐标
-                x = (j + 0.5) * cell_width
-                y = (i + 0.5) * cell_height
-                
-                # 检查是否碰撞
-                if self.check_collision((x, y)):
-                    grid[i, j] = 1.0
-        
-        return grid
-
     def save(self, filepath: str) -> None:
         """
         保存环境到文件
@@ -466,7 +410,7 @@ class Environment:
             filepath: 保存路径
         """
         import json
-        
+
         # 将障碍物转换为字典
         obstacles_dict = []
         for obs in self.obstacles:
@@ -486,14 +430,14 @@ class Environment:
                     'height': obs.height,
                     'angle': obs.angle
                 })
-        
+
         # 保存环境配置
         env_dict = {
             'width': self.width,
             'height': self.height,
             'obstacles': obstacles_dict
         }
-        
+
         with open(filepath, 'w') as f:
             json.dump(env_dict, f, indent=2)
 
@@ -509,16 +453,16 @@ class Environment:
             Environment 对象
         """
         import json
-        
+
         with open(filepath, 'r') as f:
             env_dict = json.load(f)
-        
+
         # 创建环境
         env = cls(
             width=env_dict['width'],
             height=env_dict['height']
         )
-        
+
         # 添加障碍物
         for obs_dict in env_dict['obstacles']:
             if obs_dict['type'] == 'circle':
@@ -537,8 +481,28 @@ class Environment:
                     height=obs_dict['height'],
                     angle=obs_dict.get('angle', 0.0)
                 )
-        
+
         return env
+
+    def _compute_corners(self, obstacle: RectangleObstacle) -> List[Tuple[float, float]]:
+        """计算矩形的四个角点坐标"""
+        # 未旋转时的半宽和半高
+        hw, hh = obstacle.width / 2, obstacle.height / 2
+
+        # 未旋转时的四个角点（相对于中心）
+        corners_rel = [(-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh)]
+
+        # 应用旋转
+        cos_a, sin_a = np.cos(obstacle.angle), np.sin(obstacle.angle)
+        corners = []
+        for x_rel, y_rel in corners_rel:
+            # 旋转变换
+            x_rot = x_rel * cos_a - y_rel * sin_a
+            y_rot = x_rel * sin_a + y_rel * cos_a
+            # 平移到实际位置
+            corners.append((obstacle.x + x_rot, obstacle.y + y_rot))
+
+        return corners
 
 
 if __name__ == "__main__":

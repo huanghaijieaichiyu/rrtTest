@@ -27,16 +27,16 @@ class TrainingExample:
     # 环境状态
     env_state: np.ndarray  # 环境的栅格化表示
     obstacles: List[Dict[str, Any]]  # 障碍物列表，每个障碍物转换为字典形式
-    
+
     # 路径规划相关
     start: Tuple[float, float]  # 起点
     goal: Tuple[float, float]   # 终点
     path: List[Tuple[float, float]]  # RRT* 生成的路径
-    
+
     # 采样点相关
     valid_samples: List[Tuple[float, float]]  # 有效的采样点
     invalid_samples: List[Tuple[float, float]]  # 无效的采样点
-    
+
     # 评估指标
     path_length: float  # 路径长度
     smoothness: float   # 平滑度
@@ -65,7 +65,7 @@ def obstacle_to_dict(obstacle) -> Dict[str, Any]:
 
 class RRTDataset(Dataset):
     """RRT 训练数据集"""
-    
+
     def __init__(
         self,
         examples: List[TrainingExample],
@@ -81,10 +81,10 @@ class RRTDataset(Dataset):
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         example = self.examples[idx]
-        
+
         # 将环境转换为张量
         env_tensor = torch.from_numpy(example.env_state).float()
-        
+
         # 构建输入特征
         features = {
             'env_state': env_tensor,
@@ -97,16 +97,16 @@ class RRTDataset(Dataset):
             'smoothness': torch.tensor(example.smoothness).float(),
             'clearance': torch.tensor(example.clearance).float()
         }
-        
+
         if self.transform:
             features = self.transform(features)
-            
+
         return features
 
 
 class DataGenerator:
     """训练数据生成器"""
-    
+
     def __init__(
         self,
         env_width: float = 100.0,
@@ -128,12 +128,12 @@ class DataGenerator:
     def generate_random_environment(self) -> Environment:
         """生成随机环境"""
         env = Environment(width=self.env_width, height=self.env_height)
-        
+
         # 随机生成障碍物数量
         num_obstacles = np.random.randint(
             self.min_obstacles, self.max_obstacles + 1
         )
-        
+
         for _ in range(num_obstacles):
             if np.random.random() < 0.7:  # 70% 概率生成圆形障碍物
                 x = np.random.uniform(10, self.env_width - 10)
@@ -156,7 +156,7 @@ class DataGenerator:
                     width=width, height=height,
                     angle=angle
                 )
-        
+
         return env
 
     def generate_random_points(
@@ -173,11 +173,11 @@ class DataGenerator:
                 np.random.uniform(5, self.env_width - 5),
                 np.random.uniform(5, self.env_height - 5)
             )
-            
+
             # 确保起点和终点不在障碍物内
-            if (not env.check_collision(start) and 
+            if (not env.check_collision(start) and
                 not env.check_collision(goal) and
-                np.linalg.norm(np.array(goal) - np.array(start)) > 20.0):
+                    np.linalg.norm(np.array(goal) - np.array(start)) > 20.0):
                 return start, goal
 
     def collect_samples(
@@ -189,20 +189,20 @@ class DataGenerator:
         """收集采样点数据"""
         valid_samples = []
         invalid_samples = []
-        
+
         for _ in range(self.num_samples):
             # 随机采样
             sample = (
                 np.random.uniform(0, self.env_width),
                 np.random.uniform(0, self.env_height)
             )
-            
+
             # 检查采样点是否有效
             if env.check_collision(sample):
                 invalid_samples.append(sample)
             else:
                 valid_samples.append(sample)
-        
+
         return valid_samples, invalid_samples
 
     def calculate_path_metrics(
@@ -213,14 +213,14 @@ class DataGenerator:
         """计算路径的评估指标"""
         if not path:
             return 0.0, 0.0, 0.0
-            
+
         # 计算路径长度
         path_length = 0.0
         for i in range(len(path) - 1):
             path_length += np.linalg.norm(
                 np.array(path[i+1]) - np.array(path[i])
             )
-        
+
         # 计算平滑度（相邻路径段的角度变化）
         smoothness = 0.0
         if len(path) > 2:
@@ -233,7 +233,7 @@ class DataGenerator:
                 ))
                 smoothness += angle
             smoothness /= (len(path) - 2)
-        
+
         # 计算与障碍物的最小间距
         clearance = float('inf')
         for point in path:
@@ -259,43 +259,50 @@ class DataGenerator:
                         obstacle_dict['height']
                     ) / 2
                 clearance = min(clearance, dist)
-        
+
         return path_length, smoothness, clearance
 
     def generate_example(self) -> Optional[TrainingExample]:
         """生成单个训练样本"""
         # 生成随机环境
         env = self.generate_random_environment()
-        
+
         # 生成随机起点和终点
         start, goal = self.generate_random_points(env)
-        
+
         # 使用 RRT* 生成基准路径
         planner = RRTStar(
             start=start,
             goal=goal,
             env=env,
-            max_iterations=self.rrt_iterations
+            max_iterations=self.rrt_iterations,
+            step_size=50.0,  # 增加步长以提高成功率
+            goal_sample_rate=0.2  # 增加目标采样率
         )
         path = planner.plan()
-        
+
         if not path:
+            # 路径规划失败，返回 None
             return None
-            
+
+        # 确保路径至少有 3 个点，否则无法计算平滑度
+        if len(path) < 3:
+            return None
+
         # 收集采样数据
         valid_samples, invalid_samples = self.collect_samples(env, start, goal)
-        
+
         # 计算路径指标
         path_length, smoothness, clearance = self.calculate_path_metrics(
             path, env
         )
-        
+
         # 创建环境的栅格化表示
         env_state = env.to_grid(self.grid_size)
-        
+
         # 将障碍物转换为字典形式
         obstacle_dicts = [obstacle_to_dict(obs) for obs in env.obstacles]
-        
+
         return TrainingExample(
             env_state=env_state,
             obstacles=obstacle_dicts,
@@ -334,15 +341,15 @@ class DataGenerator:
                 if example is not None:
                     examples.append(example)
             print()  # 换行
-        
+
         # 创建数据集
         dataset = RRTDataset(examples, self.grid_size)
-        
+
         # 保存数据集
         if save_dir:
             os.makedirs(save_dir, exist_ok=True)
             torch.save(dataset, os.path.join(save_dir, 'rrt_dataset.pt'))
-        
+
         return dataset
 
 
@@ -356,22 +363,22 @@ def create_data_loaders(
     # 划分数据集
     train_size = int(train_ratio * len(dataset))
     val_size = len(dataset) - train_size
-    
+
     train_dataset, val_dataset = torch.utils.data.random_split(
         dataset, [train_size, val_size]
     )
-    
+
     # 创建数据加载器
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
         shuffle=shuffle
     )
-    
+
     val_loader = DataLoader(
         val_dataset,
         batch_size=batch_size,
         shuffle=False
     )
-    
-    return train_loader, val_loader 
+
+    return train_loader, val_loader

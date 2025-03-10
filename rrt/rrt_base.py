@@ -131,11 +131,14 @@ class RRT:
 
     def _random_node(self) -> Node:
         """生成随机节点"""
-        rnd = Node(
-            np.random.uniform(self.min_x, self.max_x),
-            np.random.uniform(self.min_y, self.max_y)
-        )
-        return rnd
+        # 在区域内随机采样
+        x = np.random.uniform(0, self.env.width)
+        y = np.random.uniform(0, self.env.height)
+
+        # 打印调试信息
+        print(f"生成随机节点: ({x:.2f}, {y:.2f})")
+
+        return Node(x, y)
 
     def _get_nearest_node_index(self, node: Node) -> int:
         """找到距离给定节点最近的节点索引"""
@@ -174,27 +177,36 @@ class RRT:
         # 更新代价
         new_node.cost = from_node.cost + self.step_size
 
+        print(
+            f"扩展节点: 从 ({from_node.x:.2f}, {from_node.y:.2f}) 到 ({new_x:.2f}, {new_y:.2f})")
+
         return new_node
 
     def _check_collision(self, node1: Node, node2: Node) -> bool:
         """检查两个节点之间的路径是否无碰撞"""
         # 实际实现中，应该调用环境的碰撞检测功能
         # 这里假设环境有一个check_segment方法
-        return self._check_segment(node1, node2)
+        result = self._check_segment(node1, node2)
+        print(
+            f"碰撞检测: 从 ({node1.x:.2f}, {node1.y:.2f}) 到 ({node2.x:.2f}, {node2.y:.2f}) - {'无碰撞' if result else '有碰撞'}")
+        return result
 
     def _check_segment(self, node1: Node, node2: Node) -> bool:
         """检查两点之间的线段是否无碰撞"""
         # 实际应调用环境的碰撞检测
         # 这里简单实现，实际应该根据具体环境实现
-        return self.env.check_segment_collision(
+        result = not self.env.check_segment_collision(
             (node1.x, node1.y),
             (node2.x, node2.y)
         )
+        print(f"线段碰撞检测: {result}")
+        return result
 
     def _is_near_goal(self, node: Node) -> bool:
         """检查节点是否靠近目标点"""
         dist = np.hypot(node.x - self.goal.x, node.y - self.goal.y)
-        return dist < self.step_size
+        # 增加容忍度，使用更大的阈值
+        return dist < self.step_size * 5.0  # 原来是 self.step_size
 
     def _connect_to_goal(self, node: Node) -> None:
         """将节点连接到目标点"""

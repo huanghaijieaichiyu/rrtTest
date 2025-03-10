@@ -12,12 +12,14 @@ from ml.data.data_generator import (
     DataGenerator,
     RRTDataset,
     TrainingExample,
-    create_data_loaders
+    create_data_loaders,
+    obstacle_to_dict
 )
 
 __all__ = [
     'DataGenerator',
     'RRTDataset',
     'TrainingExample',
-    'create_data_loaders'
-] 
+    'create_data_loaders',
+    'obstacle_to_dict'
+]

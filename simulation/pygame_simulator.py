@@ -11,6 +11,7 @@ Pygame 车辆仿真器
 import os
 import time
 import math
+import matplotlib
 import numpy as np
 import pygame
 import yaml
@@ -28,6 +29,8 @@ YELLOW = (255, 255, 0)
 GRAY = (200, 200, 200)
 
 # 字体设置
+
+
 def get_font(size: int = 24) -> pygame.font.Font:
     """获取支持中文的字体"""
     # 尝试加载系统字体
@@ -44,24 +47,26 @@ def get_font(size: int = 24) -> pygame.font.Font:
         "PingFang SC",  # 苹方
         "STHeiti"  # 华文黑体
     ]
-    
+
     # 尝试按优先级加载字体
     for font_name in system_fonts:
         try:
             return pygame.font.SysFont(font_name, size)
         except:
             continue
-            
+
     # 如果系统字体都不可用，尝试加载自带字体文件
     try:
-        font_path = os.path.join(os.path.dirname(__file__), "fonts", "simhei.ttf")
+        font_path = os.path.join(os.path.dirname(
+            __file__), "fonts", "simhei.ttf")
         if os.path.exists(font_path):
             return pygame.font.Font(font_path, size)
     except:
         pass
-        
+
     # 如果都失败了，使用默认字体
     return pygame.font.Font(None, size)
+
 
 class VehicleModel:
     """简化的车辆动力学模型"""
@@ -172,21 +177,67 @@ class VehicleModel:
 class PathFollower:
     """路径跟踪控制器"""
 
-    def __init__(self, lookahead: float = 5.0):
+    def __init__(self, lookahead: float = 5.0, control_method: str = "default"):
         """
         初始化路径跟踪器
 
         参数:
             lookahead: 前瞻距离(米)
+            control_method: 控制方法，可选 "default", "pid", "mpc", "lqr"
         """
         self.lookahead = lookahead
         self.path = []
         self.current_target_idx = 0
+        self.control_method = control_method
+
+        # PID控制器参数
+        self.pid_params = {
+            'kp_steer': 0.5,    # 转向角度比例系数
+            'ki_steer': 0.05,   # 转向角度积分系数
+            'kd_steer': 0.1,    # 转向角度微分系数
+            'kp_speed': 0.3,    # 速度比例系数
+            'ki_speed': 0.01,   # 速度积分系数
+            'kd_speed': 0.05    # 速度微分系数
+        }
+        self.steer_error_sum = 0.0
+        self.steer_error_prev = 0.0
+        self.speed_error_sum = 0.0
+        self.speed_error_prev = 0.0
+        self.target_speed = 10.0  # 目标速度 m/s
+
+        # MPC控制器参数
+        self.mpc_params = {
+            'horizon': 10,      # 预测步长
+            'dt': 0.1,          # 时间步长
+            'q_x': 1.0,         # 位置x权重
+            'q_y': 1.0,         # 位置y权重
+            'q_heading': 5.0,   # 朝向权重
+            'r_steer': 0.5,     # 转向输入权重
+            'r_accel': 0.1      # 加速度输入权重
+        }
+
+        # LQR控制器参数
+        self.lqr_params = {
+            'q_x': 1.0,         # 位置x权重
+            'q_y': 1.0,         # 位置y权重
+            'q_heading': 5.0,   # 朝向权重
+            'q_speed': 0.5,     # 速度权重
+            'r_steer': 1.0,     # 转向输入权重
+            'r_accel': 0.1      # 加速度输入权重
+        }
 
     def set_path(self, path: List[Tuple[float, float]]) -> None:
         """设置要跟踪的路径"""
         self.path = path
         self.current_target_idx = 0
+
+    def set_control_method(self, method: str) -> None:
+        """设置控制方法"""
+        if method in ["default", "pid", "mpc", "lqr"]:
+            self.control_method = method
+        else:
+            print(f"不支持的控制方法: {method}，使用默认方法")
+            self.control_method = "default"
 
     def get_control(self, vehicle: VehicleModel) -> Tuple[float, float, float]:
         """
@@ -201,6 +252,18 @@ class PathFollower:
         if not self.path or self.current_target_idx >= len(self.path):
             return 0.0, 0.0, 0.0  # 没有路径或已到达终点，停车
 
+        # 根据选择的控制方法调用相应的控制器
+        if self.control_method == "pid":
+            return self._pid_control(vehicle)
+        elif self.control_method == "mpc":
+            return self._mpc_control(vehicle)
+        elif self.control_method == "lqr":
+            return self._lqr_control(vehicle)
+        else:
+            return self._default_control(vehicle)
+
+    def _default_control(self, vehicle: VehicleModel) -> Tuple[float, float, float]:
+        """默认控制方法（原有的实现）"""
         # 寻找目标点
         target_idx = self.current_target_idx
         min_dist = float('inf')
@@ -255,6 +318,389 @@ class PathFollower:
 
         return throttle, brake, steer
 
+    def _pid_control(self, vehicle: VehicleModel) -> Tuple[float, float, float]:
+        """PID控制方法"""
+        # 动态调整前瞻距离 - 根据车速调整
+        dynamic_lookahead = max(3.0, min(self.lookahead, vehicle.speed * 0.8))
+
+        # 寻找目标点
+        target_idx = self.current_target_idx
+        min_dist = float('inf')
+        closest_idx = target_idx
+
+        # 首先找到最近点
+        for i in range(self.current_target_idx,
+                       min(self.current_target_idx + 30, len(self.path))):
+            if i >= len(self.path):
+                break
+
+            tx, ty = self.path[i]
+            dist = math.sqrt((tx - vehicle.x)**2 + (ty - vehicle.y)**2)
+
+            if dist < min_dist:
+                min_dist = dist
+                closest_idx = i
+
+        # 从最近点开始，找到前瞻距离范围内的目标点
+        target_idx = closest_idx
+        for i in range(closest_idx, len(self.path)):
+            tx, ty = self.path[i]
+            dist = math.sqrt((tx - vehicle.x)**2 + (ty - vehicle.y)**2)
+
+            if dist > dynamic_lookahead:
+                target_idx = i
+                break
+
+        # 确保目标点不会超出路径范围
+        target_idx = min(target_idx, len(self.path) - 1)
+
+        # 更新当前目标点索引，但不要后退
+        self.current_target_idx = max(self.current_target_idx, closest_idx)
+
+        # 如果已接近终点，减速
+        if target_idx >= len(self.path) - 3:
+            return 0.0, 0.3, 0.0  # 轻踩刹车
+
+        # 获取目标点
+        tx, ty = self.path[target_idx]
+
+        # 计算车辆到目标点的向量
+        dx = tx - vehicle.x
+        dy = ty - vehicle.y
+
+        # 计算目标点相对于车头的角度
+        target_angle = math.atan2(dy, dx)
+        heading_error = target_angle - vehicle.heading
+
+        # 规范化到 [-π, π]
+        while heading_error > math.pi:
+            heading_error -= 2 * math.pi
+        while heading_error < -math.pi:
+            heading_error += 2 * math.pi
+
+        # 计算路径曲率 - 用于速度调整
+        path_curvature = 0.0
+        if target_idx < len(self.path) - 2:
+            p1 = np.array(self.path[target_idx])
+            p2 = np.array(self.path[min(target_idx + 1, len(self.path) - 1)])
+            p3 = np.array(self.path[min(target_idx + 2, len(self.path) - 1)])
+
+            if np.linalg.norm(p2 - p1) > 0.001 and \
+               np.linalg.norm(p3 - p2) > 0.001:
+                v1 = p2 - p1
+                v2 = p3 - p2
+                dot_product = np.dot(v1, v2)
+                norm_product = np.linalg.norm(v1) * np.linalg.norm(v2)
+
+                if norm_product > 0.001:  # 避免除以零
+                    cos_angle = np.clip(dot_product / norm_product, -1.0, 1.0)
+                    angle = np.arccos(cos_angle)
+                    path_curvature = angle / np.linalg.norm(v1)
+
+        # PID控制 - 转向
+        # 限制积分项，防止积分饱和
+        self.steer_error_sum = max(-3.0, min(3.0,
+                                   self.steer_error_sum + heading_error))
+        steer_error_diff = heading_error - self.steer_error_prev
+        self.steer_error_prev = heading_error
+
+        # 计算PID控制输出
+        steer = (self.pid_params['kp_steer'] * heading_error +
+                 self.pid_params['ki_steer'] * self.steer_error_sum +
+                 self.pid_params['kd_steer'] * steer_error_diff)
+
+        # 限制在 [-1, 1] 范围内
+        steer = max(-1.0, min(1.0, steer))
+
+        # 根据路径曲率和前瞻距离调整目标速度
+        base_target_speed = self.target_speed
+        curvature_factor = max(0.3, 1.0 - path_curvature * 8.0)
+        adjusted_target_speed = base_target_speed * curvature_factor
+
+        # 如果前方转弯较大，进一步降低速度
+        if path_curvature > 0.1:
+            adjusted_target_speed *= 0.7
+
+        # PID控制 - 速度
+        speed_error = adjusted_target_speed - vehicle.speed
+
+        # 限制积分项，防止积分饱和
+        self.speed_error_sum = max(-5.0, min(5.0,
+                                   self.speed_error_sum + speed_error))
+        speed_error_diff = speed_error - self.speed_error_prev
+        self.speed_error_prev = speed_error
+
+        # 计算PID控制输出
+        throttle_brake = (self.pid_params['kp_speed'] * speed_error +
+                          self.pid_params['ki_speed'] * self.speed_error_sum +
+                          self.pid_params['kd_speed'] * speed_error_diff)
+
+        # 将输出转换为油门和刹车
+        if throttle_brake >= 0:
+            throttle = min(1.0, throttle_brake)
+            brake = 0.0
+        else:
+            throttle = 0.0
+            brake = min(1.0, -throttle_brake)
+
+        # 如果即将转弯，减速
+        if abs(steer) > 0.5:
+            throttle *= 0.5
+        elif abs(steer) > 0.3:
+            throttle *= 0.7
+
+        return throttle, brake, steer
+
+    def _mpc_control(self, vehicle: VehicleModel) -> Tuple[float, float, float]:
+        """模型预测控制方法"""
+        # 简化版MPC实现，实际应用中应使用优化库如CVXPY
+
+        # 动态调整前瞻距离 - 根据车速调整
+        dynamic_lookahead = max(3.0, min(self.lookahead, vehicle.speed * 0.8))
+
+        # 寻找目标点
+        target_idx = self.current_target_idx
+        min_dist = float('inf')
+        closest_idx = target_idx
+
+        # 首先找到最近点
+        for i in range(self.current_target_idx,
+                       min(self.current_target_idx + 30, len(self.path))):
+            if i >= len(self.path):
+                break
+
+            tx, ty = self.path[i]
+            dist = math.sqrt((tx - vehicle.x)**2 + (ty - vehicle.y)**2)
+
+            if dist < min_dist:
+                min_dist = dist
+                closest_idx = i
+
+        # 从最近点开始，找到前瞻距离范围内的目标点
+        target_idx = closest_idx
+        for i in range(closest_idx, len(self.path)):
+            tx, ty = self.path[i]
+            dist = math.sqrt((tx - vehicle.x)**2 + (ty - vehicle.y)**2)
+
+            if dist > dynamic_lookahead:
+                target_idx = i
+                break
+
+        # 确保目标点不会超出路径范围
+        target_idx = min(target_idx, len(self.path) - 1)
+
+        # 更新当前目标点索引，但不要后退
+        self.current_target_idx = max(self.current_target_idx, closest_idx)
+
+        # 如果已接近终点，减速
+        if target_idx >= len(self.path) - 3:
+            return 0.0, 0.3, 0.0  # 轻踩刹车
+
+        # 动态调整预测范围 - 根据车速和前瞻距离
+        adaptive_horizon = max(5, min(self.mpc_params['horizon'],
+                                      int(dynamic_lookahead / 2)))
+
+        # 获取预测范围内的参考路径点
+        ref_path = []
+        for i in range(adaptive_horizon):
+            idx = min(target_idx + i, len(self.path) - 1)
+            ref_path.append(self.path[idx])
+
+        # 计算当前位置与参考路径第一个点的误差
+        ref_x, ref_y = ref_path[0]
+        dx = ref_x - vehicle.x
+        dy = ref_y - vehicle.y
+
+        # 计算参考朝向 - 使用多个点来获得更平滑的朝向
+        if len(ref_path) >= 2:
+            p1 = np.array(ref_path[0])
+            p2 = np.array(ref_path[min(1, len(ref_path) - 1)])
+            path_vector = p2 - p1
+            ref_heading = math.atan2(path_vector[1], path_vector[0])
+        else:
+            ref_heading = math.atan2(dy, dx)
+
+        heading_error = ref_heading - vehicle.heading
+
+        # 规范化到 [-π, π]
+        while heading_error > math.pi:
+            heading_error -= 2 * math.pi
+        while heading_error < -math.pi:
+            heading_error += 2 * math.pi
+
+        # 计算横向误差（车辆坐标系中）
+        lateral_error = -dx * \
+            math.sin(vehicle.heading) + dy * math.cos(vehicle.heading)
+
+        # 计算转向输入 (使用横向误差和朝向误差)
+        lateral_weight = self.mpc_params['q_y'] * lateral_error
+        heading_weight = self.mpc_params['q_heading'] * heading_error
+        steer_weight = self.mpc_params['r_steer'] * vehicle.max_steer
+        steer = (lateral_weight + heading_weight) / steer_weight
+
+        # 限制在 [-1, 1] 范围内
+        steer = max(-1.0, min(1.0, steer))
+
+        # 计算路径曲率和复杂度
+        path_curvatures = []
+        if len(ref_path) >= 3:
+            for i in range(len(ref_path) - 2):
+                p1 = np.array(ref_path[i])
+                p2 = np.array(ref_path[i + 1])
+                p3 = np.array(ref_path[i + 2])
+
+                if np.linalg.norm(p2 - p1) > 0.001 and \
+                   np.linalg.norm(p3 - p2) > 0.001:
+                    v1 = p2 - p1
+                    v2 = p3 - p2
+                    dot_product = np.dot(v1, v2)
+                    norm_product = np.linalg.norm(v1) * np.linalg.norm(v2)
+
+                    if norm_product > 0.001:  # 避免除以零
+                        cos_angle = np.clip(
+                            dot_product / norm_product, -1.0, 1.0)
+                        angle = np.arccos(cos_angle)
+                        path_curvatures.append(angle / np.linalg.norm(v1))
+
+        # 计算平均曲率和最大曲率
+        avg_curvature = 0.0
+        max_curvature = 0.0
+        if path_curvatures:
+            avg_curvature = sum(path_curvatures) / len(path_curvatures)
+            max_curvature = max(path_curvatures)
+
+        # 根据路径曲率和复杂度调整目标速度
+        base_target_speed = 10.0  # 基础目标速度
+
+        # 曲率因子 - 曲率越大，速度越慢
+        curvature_factor = max(0.3, 1.0 - max_curvature * 10.0)
+
+        # 复杂度因子 - 平均曲率越大，速度越慢
+        complexity_factor = max(0.5, 1.0 - avg_curvature * 5.0)
+
+        # 距离因子 - 离目标点越近，速度越慢
+        distance_to_target = math.sqrt(dx**2 + dy**2)
+        distance_factor = min(1.0, distance_to_target / dynamic_lookahead)
+
+        # 综合考虑各因素
+        target_speed = base_target_speed * curvature_factor * \
+            complexity_factor * distance_factor
+
+        # 如果前方转弯较大，进一步降低速度
+        if max_curvature > 0.1:
+            target_speed *= 0.7
+
+        # 计算速度误差
+        speed_error = target_speed - vehicle.speed
+
+        # 计算油门和刹车 - 使用比例控制
+        accel_cmd = self.mpc_params['q_x'] * \
+            speed_error / self.mpc_params['r_accel']
+
+        if accel_cmd >= 0:
+            throttle = min(1.0, accel_cmd)
+            brake = 0.0
+        else:
+            throttle = 0.0
+            brake = min(1.0, -accel_cmd)
+
+        # 如果即将转弯，减速
+        if abs(steer) > 0.5:
+            throttle *= 0.5
+        elif abs(steer) > 0.3:
+            throttle *= 0.7
+
+        return throttle, brake, steer
+
+    def _lqr_control(self, vehicle: VehicleModel) -> Tuple[float, float, float]:
+        """线性二次型调节器控制方法"""
+        # 寻找目标点
+        target_idx = self.current_target_idx
+        min_dist = float('inf')
+
+        # 向前找到一个在前瞻距离范围内的点
+        for i in range(self.current_target_idx, len(self.path)):
+            tx, ty = self.path[i]
+            dist = math.sqrt((tx - vehicle.x)**2 + (ty - vehicle.y)**2)
+
+            if dist < min_dist:
+                min_dist = dist
+                target_idx = i
+
+            if dist > self.lookahead:
+                break
+
+        # 更新当前目标点索引
+        self.current_target_idx = target_idx
+
+        # 如果已接近终点，减速
+        if target_idx >= len(self.path) - 3:
+            return 0.0, 0.3, 0.0  # 轻踩刹车
+
+        # 获取目标点
+        tx, ty = self.path[target_idx]
+
+        # 计算参考路径的切线方向（简化版）
+        next_idx = min(target_idx + 1, len(self.path) - 1)
+        next_x, next_y = self.path[next_idx]
+        ref_heading = math.atan2(next_y - ty, next_x - tx)
+
+        # 计算状态误差
+        dx = tx - vehicle.x
+        dy = ty - vehicle.y
+        dheading = ref_heading - vehicle.heading
+
+        # 规范化到 [-π, π]
+        while dheading > math.pi:
+            dheading -= 2 * math.pi
+        while dheading < -math.pi:
+            dheading += 2 * math.pi
+
+        # 计算横向误差（车辆坐标系中）
+        cos_heading = math.cos(vehicle.heading)
+        sin_heading = math.sin(vehicle.heading)
+        lateral_error = -dx * sin_heading + dy * cos_heading
+
+        # 计算纵向误差（车辆坐标系中）
+        longitudinal_error = dx * cos_heading + dy * sin_heading
+
+        # 简化的LQR控制 - 在实际应用中应求解Riccati方程
+        # 这里使用简化方法：将状态误差与权重相乘作为控制输入
+
+        # 计算转向输入
+        steer = (self.lqr_params['q_y'] * lateral_error +
+                 self.lqr_params['q_heading'] * dheading) / self.lqr_params['r_steer']
+
+        # 限制在 [-1, 1] 范围内
+        steer = max(-1.0, min(1.0, steer / vehicle.max_steer))
+
+        # 计算目标速度
+        target_speed = 10.0  # 基础目标速度
+
+        # 根据横向误差和朝向误差调整速度
+        target_speed *= max(0.3, 1.0 - 0.5 *
+                            abs(lateral_error) - 0.5 * abs(dheading))
+
+        # 计算速度误差
+        speed_error = target_speed - vehicle.speed
+
+        # 计算油门和刹车
+        accel_cmd = self.lqr_params['q_speed'] * \
+            speed_error / self.lqr_params['r_accel']
+
+        if accel_cmd >= 0:
+            throttle = min(1.0, accel_cmd)
+            brake = 0.0
+        else:
+            throttle = 0.0
+            brake = min(1.0, -accel_cmd)
+
+        # 如果即将转弯，减速
+        if abs(steer) > 0.5:
+            throttle *= 0.5
+
+        return throttle, brake, steer
+
 
 class PygameSimulator:
     """基于Pygame的车辆仿真器"""
@@ -289,11 +735,19 @@ class PygameSimulator:
         self.environment = None
         self.vehicle = VehicleModel()
         self.follower = PathFollower(
-            lookahead=self.config.get('lookahead', 5.0))
+            lookahead=self.config.get('lookahead', 5.0),
+            control_method=self.config.get('control_method', 'default')
+        )
 
         # 仿真状态
         self.running = False
         self.paused = False
+        self.collision_detected = False  # 添加碰撞状态标志
+
+        # 控制方法
+        self.control_methods = ["default", "pid", "mpc", "lqr"]
+        self.current_control_method = self.config.get(
+            'control_method', 'default')
 
         # 记录数据
         self.simulation_data = {
@@ -307,6 +761,11 @@ class PygameSimulator:
         }
         self.start_time = None
 
+        # 初始化消息显示
+        self.message = ""
+        self.message_time = 0
+        self.message_duration = 3  # 消息显示时间（秒）
+
     def _load_config(self, config_path: Optional[str]) -> Dict:
         """加载配置文件"""
         default_config = {
@@ -317,6 +776,7 @@ class PygameSimulator:
             'fps': 60,
             'dt': 0.05,  # 仿真时间步长(秒)
             'lookahead': 5.0,  # 路径跟踪前瞻距离
+            'control_method': 'default',  # 控制方法: default, pid, mpc, lqr
             'vehicle': {
                 'length': 4.5,
                 'width': 1.8,
@@ -458,23 +918,39 @@ class PygameSimulator:
             pygame.draw.lines(self.screen, GREEN, False, screen_points, 2)
 
     def _draw_info(self) -> None:
-        """绘制车辆信息"""
-        font = get_font(24)
-        
-        # 车辆状态信息
-        info_list = [
-            f"速度: {self.vehicle.speed:.1f} m/s",
-            f"加速度: {self.vehicle.acceleration:.1f} m/s²",
-            f"转向角: {math.degrees(self.vehicle.steer_angle):.1f}°",
-            f"位置: ({self.vehicle.x:.1f}, {self.vehicle.y:.1f})",
-            f"朝向: {math.degrees(self.vehicle.heading):.1f}°"
-        ]
-        
-        y = 10
-        for info in info_list:
-            text = font.render(info, True, BLACK)
-            self.screen.blit(text, (10, y))
-            y += 30
+        """绘制信息"""
+        font = get_font(18)
+
+        # 绘制控制方法信息
+        control_text = f"控制方法: {self.current_control_method}"
+        control_surface = font.render(control_text, True, BLACK)
+        self.screen.blit(control_surface, (10, 10))
+
+        # 绘制车辆信息
+        speed_text = f"速度: {self.vehicle.speed:.2f} m/s"
+        speed_surface = font.render(speed_text, True, BLACK)
+        self.screen.blit(speed_surface, (10, 40))
+
+        steer_text = f"转向角: {self.vehicle.steer_angle:.2f} rad"
+        steer_surface = font.render(steer_text, True, BLACK)
+        self.screen.blit(steer_surface, (10, 70))
+
+        # 绘制碰撞状态
+        if self.collision_detected:
+            collision_text = "碰撞警告！"
+            collision_surface = font.render(collision_text, True, RED)
+            self.screen.blit(collision_surface, (10, 100))
+
+        # 绘制操作提示
+        help_text = "空格: 暂停/继续 | R: 重置位置 | C: 切换控制方法 | T: 重新规划路径并重置位置"
+        help_surface = font.render(help_text, True, BLACK)
+        self.screen.blit(help_surface, (10, self.height - 30))
+
+        # 显示临时消息
+        if self.message and time.time() - self.message_time < self.message_duration:
+            message_surface = font.render(self.message, True, RED)
+            self.screen.blit(message_surface, (self.width // 2 - message_surface.get_width() // 2,
+                                               self.height // 2 - message_surface.get_height() // 2))
 
     def load_custom_road(self, road_file: str) -> bool:
         """加载自定义路面文件（兼容接口）"""
@@ -509,6 +985,11 @@ class PygameSimulator:
         # 设置路径
         self.follower.set_path(path)
 
+        # 保存原始路径用于重新规划
+        self.original_path = path.copy()
+        self.start_point = path[0]
+        self.goal_point = path[-1]
+
         # 开始仿真
         self.running = True
         self.paused = False
@@ -528,6 +1009,100 @@ class PygameSimulator:
 
         # 运行主循环
         return self._run_simulation()
+
+    def regenerate_path(self) -> bool:
+        """
+        重新规划路径
+
+        使用原始起点作为新的起点，原始目标点作为终点，重新规划路径
+        并将车辆位置重置到原始起点
+
+        返回:
+            重新规划是否成功
+        """
+        if not hasattr(self, 'original_path') or not self.original_path:
+            self.message = "没有原始路径，无法重新规划"
+            self.message_time = time.time()
+            print(self.message)
+            return False
+
+        if not self.environment:
+            self.message = "没有设置环境，无法重新规划"
+            self.message_time = time.time()
+            print(self.message)
+            return False
+
+        # 使用原始起点作为新的起点
+        start = self.start_point
+
+        # 使用原始目标点作为终点
+        goal = self.goal_point
+
+        self.message = "正在重新规划路径..."
+        self.message_time = time.time()
+        print(f"重新规划路径: 从 {start} 到 {goal}")
+
+        try:
+            # 导入RRT*算法
+            from rrt.rrt_star import RRTStar
+
+            # 创建规划器
+            planner = RRTStar(
+                start=start,
+                goal=goal,
+                env=self.environment,
+                max_iterations=1000,  # 可以根据需要调整
+                goal_sample_rate=0.1  # 增加目标采样率以加快规划
+            )
+
+            # 规划新路径
+            new_path = planner.plan()
+
+            if not new_path:
+                self.message = "重新规划失败，未找到可行路径"
+                self.message_time = time.time()
+                print(self.message)
+                return False
+
+            self.message = f"重新规划成功，新路径包含 {len(new_path)} 个点"
+            self.message_time = time.time()
+            print(self.message)
+
+            # 更新路径
+            self.follower.set_path(new_path)
+
+            # 重置车辆位置到原始起点
+            self.vehicle.x, self.vehicle.y = self.start_point
+
+            # 设置车辆朝向
+            if len(new_path) > 1:
+                dx = new_path[1][0] - new_path[0][0]
+                dy = new_path[1][1] - new_path[0][1]
+                self.vehicle.heading = math.atan2(dy, dx)
+
+            # 重置车辆速度和加速度
+            self.vehicle.speed = 0.0
+            self.vehicle.acceleration = 0.0
+            self.vehicle.steer_angle = 0.0
+
+            # 重置轨迹
+            self.vehicle.trajectory = [(self.vehicle.x, self.vehicle.y)]
+
+            # 重置路径跟踪器的目标点索引
+            self.follower.current_target_idx = 0
+
+            return True
+
+        except ImportError:
+            self.message = "无法导入RRT*算法，请确保rrt模块可用"
+            self.message_time = time.time()
+            print(self.message)
+            return False
+        except Exception as e:
+            self.message = f"重新规划路径时出错: {e}"
+            self.message_time = time.time()
+            print(self.message)
+            return False
 
     def _run_simulation(self) -> bool:
         """运行仿真主循环"""
@@ -552,33 +1127,61 @@ class PygameSimulator:
                                 self.vehicle.trajectory = [
                                     (self.vehicle.x, self.vehicle.y)]
                                 self.follower.current_target_idx = 0
+                                self.collision_detected = False  # 重置碰撞状态
+                        elif event.key == pygame.K_c:
+                            # 切换控制方法
+                            self.current_control_method = self.control_methods[(self.control_methods.index(
+                                self.current_control_method) + 1) % len(self.control_methods)]
+                            self.follower.set_control_method(
+                                self.current_control_method)
+                        elif event.key == pygame.K_t:
+                            # 重新规划路径并重置车辆位置
+                            if not self.paused:
+                                self.message = "重新规划路径并重置车辆位置..."
+                                self.message_time = time.time()
+                                if self.regenerate_path():
+                                    self.collision_detected = False  # 重置碰撞状态
+                            else:
+                                self.message = "请先取消暂停再重新规划路径"
+                                self.message_time = time.time()
 
-                if not self.paused:
-                    # 计算控制输入
-                    throttle, brake, steer = self.follower.get_control(
-                        self.vehicle)
+                if not self.paused and not self.collision_detected:
+                    # 检查碰撞
+                    if self.environment and self.environment.check_collision((self.vehicle.x, self.vehicle.y)):
+                        self.collision_detected = True
+                        self.message = "警告：发生碰撞！按R重置位置或按T重新规划路径"
+                        self.message_time = time.time()
+                        self.message_duration = 5  # 延长碰撞警告的显示时间
+                        print(self.message)
+                    else:
+                        # 计算控制输入
+                        throttle, brake, steer = self.follower.get_control(
+                            self.vehicle)
 
-                    # 更新车辆状态
-                    self.vehicle.update(throttle, brake, steer, dt)
+                        # 更新车辆状态
+                        self.vehicle.update(throttle, brake, steer, dt)
 
-                    # 记录数据
-                    current_time = time.time() - self.start_time
-                    self.simulation_data['time'].append(current_time)
-                    self.simulation_data['position_x'].append(self.vehicle.x)
-                    self.simulation_data['position_y'].append(self.vehicle.y)
-                    self.simulation_data['heading'].append(
-                        self.vehicle.heading)
-                    self.simulation_data['speed'].append(self.vehicle.speed)
-                    self.simulation_data['steer_angle'].append(
-                        self.vehicle.steer_angle)
-                    self.simulation_data['acceleration'].append(
-                        self.vehicle.acceleration)
+                        # 记录数据
+                        current_time = time.time() - (self.start_time or time.time())
+                        self.simulation_data['time'].append(current_time)
+                        self.simulation_data['position_x'].append(
+                            self.vehicle.x)
+                        self.simulation_data['position_y'].append(
+                            self.vehicle.y)
+                        self.simulation_data['heading'].append(
+                            self.vehicle.heading)
+                        self.simulation_data['speed'].append(
+                            self.vehicle.speed)
+                        self.simulation_data['steer_angle'].append(
+                            self.vehicle.steer_angle)
+                        self.simulation_data['acceleration'].append(
+                            self.vehicle.acceleration)
 
-                    # 检查是否到达终点
-                    if self.follower.current_target_idx >= len(self.follower.path) - 1 and self.vehicle.speed < 0.1:
-                        print("已到达终点")
-                        time.sleep(1)  # 短暂停留
-                        break
+                        # 检查是否到达终点
+                        if self.follower.current_target_idx >= len(self.follower.path) - 1 and self.vehicle.speed < 0.1:
+                            print("已到达终点")
+                            time.sleep(1)  # 短暂停留
+                            break
 
                 # 绘制场景
                 self.screen.fill(WHITE)
@@ -610,6 +1213,7 @@ class PygameSimulator:
         """可视化仿真结果"""
         try:
             import matplotlib.pyplot as plt
+            matplotlib.rc("font", family="Microsoft YaHei")
 
             fig, axs = plt.subplots(3, 2, figsize=(12, 10))
 

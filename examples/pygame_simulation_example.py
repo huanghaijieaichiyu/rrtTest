@@ -8,26 +8,13 @@ Pygame 仿真示例脚本
 """
 
 
-########### 添加项目根目录到 Python 路径 ##########
-import os
-import sys
-
-
-pythonpath = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-print(pythonpath)
-sys.path.insert(0, pythonpath)
-
-#####
-
-
-import numpy as np
-import argparse
-from simulation.environment import Environment
-from simulation.pygame_simulator import PygameSimulator
-from rrt.rrt_base import RRT
-from rrt.rrt_star import RRTStar
 from rrt.informed_rrt import InformedRRTStar
-
+from rrt.rrt_star import RRTStar
+from rrt.rrt_base import RRT
+from simulation.pygame_simulator import PygameSimulator
+from simulation.environment import Environment
+import argparse
+import numpy as np
 
 
 # Project imports - these must come after modifying sys.path
