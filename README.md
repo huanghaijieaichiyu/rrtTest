@@ -1,175 +1,136 @@
-# RRT-PyTorch-CarSim 仿真项目
+# RRT Path Planning Project
 
-一个基于PyTorch和CarSim的RRT（快速探索随机树）路径规划算法仿真平台，用于自动驾驶车辆路径规划研究。
+基于 RRT（Rapidly-exploring Random Tree）算法的路径规划项目，包含多种 RRT 变体实现和可视化工具。
 
-## 项目概述
+## 功能特点
 
-本项目结合了RRT路径规划算法、PyTorch深度学习框架和CarSim车辆动力学仿真软件，创建了一个完整的自动驾驶路径规划仿真环境。主要功能包括：
+- 支持多种 RRT 算法变体：
+  - 基础 RRT
+  - RRT*
+  - Informed RRT*
+  - 基于深度学习的神经网络增强 RRT
+- 使用 Pygame 进行实时可视化
+- 支持自定义环境创建和保存
+- 提供神经网络模型训练功能
 
-- 基于RRT及其变种（RRT*、Informed RRT*等）的路径规划算法实现
-- 使用PyTorch构建的神经网络模型，用于优化路径规划策略
-- 与CarSim的接口，实现高保真度的车辆动力学仿真
-- 可视化工具，展示规划路径和车辆行为
-
-## 安装指南
-
-### 前提条件
-
-- Python 3.8+
-- CarSim 软件（需单独安装）
-- CUDA（可选，用于GPU加速）
-
-### 安装步骤
+## 安装
 
 1. 克隆仓库：
-   ```bash
-   git clone https://github.com/huangxiaohaiaichiyu/rrt-pytorch-carsim.git
-   cd rrt-pytorch-carsim
-   ```
+```bash
+git clone https://github.com/yourusername/rrt-path-planning.git
+cd rrt-path-planning
+```
 
 2. 安装依赖：
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-3. 配置CarSim：
-   - 在`config/carsim_config.yaml`中配置CarSim安装路径和接口设置
-
-## 目录结构
-
-```
-rrt-pytorch-carsim/
-│
-├── rrt/                    # RRT算法实现
-│   ├── __init__.py
-│   ├── rrt_base.py         # 基础RRT算法
-│   ├── rrt_star.py         # RRT*算法
-│   └── informed_rrt.py     # Informed RRT*算法
-│
-├── ml/                     # 机器学习模型
-│   ├── __init__.py
-│   ├── models/             # PyTorch模型定义
-│   ├── training/           # 训练脚本
-│   └── inference/          # 推理代码
-│
-├── simulation/             # 仿真环境
-│   ├── __init__.py
-│   ├── carsim_interface.py # CarSim接口
-│   ├── environment.py      # 仿真环境定义
-│   └── visualization.py    # 可视化工具
-│
-├── utils/                  # 工具函数
-│   ├── __init__.py
-│   ├── math_utils.py       # 数学工具
-│   └── data_processing.py  # 数据处理工具
-│
-├── config/                 # 配置文件
-│   ├── default_config.yaml # 默认配置
-│   └── carsim_config.yaml  # CarSim配置
-│
-├── examples/               # 示例脚本
-│   ├── basic_rrt_demo.py   # 基础RRT演示
-│   ├── ml_rrt_demo.py      # 结合机器学习的RRT演示
-│   └── carsim_demo.py      # CarSim集成演示
-│
-├── tests/                  # 测试代码
-│   ├── __init__.py
-│   ├── test_rrt.py
-│   └── test_carsim.py
-│
-├── data/                   # 数据目录
-│   ├── maps/               # 地图数据
-│   ├── trajectories/       # 轨迹数据
-│   └── model_weights/      # 模型权重
-│
-├── docs/                   # 文档
-│   ├── api_reference.md
-│   └── tutorials/
-│
-├── main.py                 # 主入口
-├── run_simulation.py       # 运行仿真
-├── requirements.txt        # 项目依赖
-└── README.md               # 本文档
+```bash
+pip install -r requirements.txt
 ```
 
-## 使用示例
+## 使用方法
 
-### 基础RRT路径规划
+项目提供统一的命令行接口，支持以下主要功能：
 
-```python
-from rrt.rrt_base import RRT
-from simulation.environment import Environment
+### 1. 运行路径规划算法
 
-# 创建环境
-env = Environment(map_path="data/maps/example_map.yaml")
+```bash
+# 使用 RRT* 算法（默认）
+python main.py run
 
-# 初始化RRT规划器
-rrt_planner = RRT(
-    start=(0, 0),
-    goal=(100, 100),
-    env=env,
-    step_size=5.0,
-    max_iterations=1000
-)
+# 指定算法、起点和终点
+python main.py run --algorithm rrt_star --start 10 10 --goal 90 90
 
-# 执行路径规划
-path = rrt_planner.plan()
+# 使用自定义地图
+python main.py run --algorithm informed_rrt --map maps/custom_map.json
 
-# 可视化结果
-env.visualize_path(path)
+# 使用神经网络增强的 RRT
+python main.py run --algorithm neural_rrt --model-path results/models/model.pth
+
+# 可视化执行过程
+python main.py run --visualize
+
+# 保存规划路径
+python main.py run --save-path results/paths/path.json
 ```
 
-### 与CarSim集成
+可用参数：
+- `--algorithm`: 选择算法 [rrt, rrt_star, informed_rrt, neural_rrt]
+- `--start`: 起点坐标，例如 "10 10"
+- `--goal`: 终点坐标，例如 "90 90"
+- `--map`: 地图文件路径
+- `--model-path`: 神经网络模型路径（仅用于 neural_rrt）
+- `--iterations`: 最大迭代次数
+- `--save-path`: 保存路径的文件路径
+- `--visualize`: 是否可视化执行过程
 
-```python
-from simulation.carsim_interface import CarSimInterface
-from rrt.rrt_star import RRTStar
+### 2. 训练神经网络增强的 RRT
 
-# 创建CarSim接口
-carsim = CarSimInterface(config_path="config/carsim_config.yaml")
+```bash
+# 使用默认参数训练
+python main.py train
 
-# 初始化规划器
-planner = RRTStar(
-    start=carsim.get_vehicle_state(),
-    goal=(100, 100),
-    env=carsim.get_environment(),
-    step_size=2.0
-)
+# 自定义训练参数
+python main.py train --num-episodes 2000 --num-epochs 200 --batch-size 64
 
-# 规划路径
-path = planner.plan()
-
-# 在CarSim中执行路径
-carsim.execute_path(path)
+# 指定保存目录和设备
+python main.py train --save-dir results/my_models --device cuda
 ```
 
-## 与PyTorch结合
+可用参数：
+- `--num-episodes`: 训练数据收集的路径数量
+- `--num-epochs`: 训练轮数
+- `--batch-size`: 批次大小
+- `--learning-rate`: 学习率
+- `--save-dir`: 模型保存目录
+- `--device`: 训练设备 (cuda/cpu)
+- `--visualize`: 是否可视化训练过程
 
-项目使用PyTorch实现了几种强化学习和监督学习方法来优化RRT算法，例如：
+### 3. 创建测试环境
 
-- 使用神经网络预测采样区域
-- 基于深度强化学习的路径优化
-- 端到端的轨迹生成
+```bash
+# 创建随机环境
+python main.py create-env --save-path maps/random_map.json
 
-详细示例请参见`examples/ml_rrt_demo.py`。
+# 自定义环境参数
+python main.py create-env --width 200 --height 200 --num-circles 8 --num-rectangles 5 --save-path maps/large_map.json
 
-## 贡献指南
+# 可视化创建的环境
+python main.py create-env --save-path maps/map.json --visualize
+```
 
-欢迎贡献代码、报告问题或提出新功能建议。请遵循以下步骤：
+可用参数：
+- `--width`: 环境宽度
+- `--height`: 环境高度
+- `--num-circles`: 圆形障碍物数量
+- `--num-rectangles`: 矩形障碍物数量
+- `--save-path`: 保存环境的文件路径
+- `--visualize`: 是否可视化环境
 
-1. Fork仓库
-2. 创建功能分支 (`git checkout -b feature/amazing-feature`)
-3. 提交更改 (`git commit -m 'Add amazing feature'`)
-4. 推送到分支 (`git push origin feature/amazing-feature`)
-5. 开启Pull Request
+## 项目结构
+
+```
+.
+├── main.py              # 主程序入口
+├── rrt/                 # RRT 算法实现
+│   ├── rrt_base.py     # 基础 RRT
+│   ├── rrt_star.py     # RRT*
+│   └── informed_rrt.py # Informed RRT*
+├── ml/                  # 机器学习相关
+│   └── models/         # 神经网络模型
+├── simulation/         # 仿真和可视化
+│   ├── environment.py  # 环境定义
+│   └── pygame_simulator.py # Pygame 可视化
+├── examples/           # 示例脚本
+├── config/            # 配置文件
+├── results/           # 结果保存
+│   ├── models/       # 训练模型
+│   └── paths/        # 规划路径
+└── maps/             # 环境地图
+```
+
+## 贡献
+
+欢迎提交 Issue 和 Pull Request。
 
 ## 许可证
 
-本项目采用MIT许可证 - 详见 [LICENSE](LICENSE) 文件。
-
-## 联系方式
-
-如有任何问题，请通过以下方式联系：
-
-- 电子邮件：huangxiaohai99@126.com
-- GitHub Issues 
+本项目采用 MIT 许可证。详见 [LICENSE](LICENSE) 文件。 

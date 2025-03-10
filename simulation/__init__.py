@@ -1,11 +1,12 @@
 """
-仿真环境包
+仿真模块
 
-此包提供仿真环境、可视化工具和与CarSim的接口。
+包含环境定义和可视化工具：
+- Environment: 路径规划环境
+- PygameSimulator: 基于 Pygame 的可视化工具
 """
 
-from .environment import Environment
-from .carsim_interface import CarSimInterface
-from .visualization import Visualization
+from simulation.environment import Environment
+from simulation.pygame_simulator import PygameSimulator
 
-__all__ = ['Environment', 'CarSimInterface', 'Visualization']
+__all__ = ['Environment', 'PygameSimulator']

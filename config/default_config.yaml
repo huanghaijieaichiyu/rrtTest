@@ -1,11 +1,12 @@
-# 默认配置文件
+# RRT-PyTorch-CarSim 默认配置文件
+# 编码: UTF-8
 
 # 项目基础配置
 project:
   # 项目名称
   name: "RRT-PyTorch-CarSim"
   # 项目版本
-  version: "0.1.0"
+  version: "1.0.0"
   # 数据路径
   data_path: "data/"
   # 结果保存路径

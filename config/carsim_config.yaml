@@ -1,7 +1,8 @@
 # CarSim配置文件
+# 编码: UTF-8
 
 # CarSim软件路径
-carsim_path: "C:/Program Files/CarSim"
+carsim_path: "D:/tools/Carsim"
 
 # 车辆参数
 vehicle_params:

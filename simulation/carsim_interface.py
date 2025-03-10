@@ -1,3 +1,6 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
 """
 CarSim接口模块
 
@@ -7,7 +10,7 @@ CarSim接口模块
 import os
 import numpy as np
 import yaml
-from typing import Tuple, List, Dict, Any, Optional
+from typing import Tuple, List, Dict, Any, Optional, Sequence
 import time
 import matplotlib.pyplot as plt
 
@@ -57,7 +60,7 @@ class CarSimInterface:
             配置数据字典
         """
         try:
-            with open(config_path, 'r') as f:
+            with open(config_path, 'r', encoding='utf-8') as f:
                 return yaml.safe_load(f)
         except Exception as e:
             print(f"加载配置文件失败: {e}")
@@ -142,7 +145,7 @@ class CarSimInterface:
         """
         return self.environment
 
-    def execute_path(self, path: List[Tuple[float, float]]) -> bool:
+    def execute_path(self, path: Sequence[Tuple[float, float]]) -> bool:
         """
         在CarSim中执行规划路径
 
@@ -169,7 +172,9 @@ class CarSimInterface:
             # 模拟执行延迟
             for i, point in enumerate(path):
                 print(
-                    f"执行路径点 {i+1}/{len(path)}: ({point[0]:.2f}, {point[1]:.2f})")
+                    f"执行路径点 {i+1}/{len(path)}: "
+                    f"({point[0]:.2f}, {point[1]:.2f})"
+                )
                 time.sleep(0.1)  # 模拟执行延迟
 
             print("路径执行完成")

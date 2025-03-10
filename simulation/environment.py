@@ -1,14 +1,42 @@
-"""
-仿真环境模块
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
 
-提供用于路径规划的环境表示，包括障碍物、边界等。
-支持碰撞检测和环境可视化。
+"""
+环境定义模块
+
+提供路径规划环境的定义，包括：
+- 环境边界
+- 障碍物管理
+- 碰撞检测
+- 栅格化表示
 """
 
 import numpy as np
 import matplotlib.pyplot as plt
-from typing import Tuple, List, Dict, Optional, Union
+from typing import List, Optional, Tuple, Union
 from shapely.geometry import Point, LineString
+from matplotlib.patches import Circle, Polygon
+from dataclasses import dataclass
+
+
+@dataclass
+class CircleObstacle:
+    """圆形障碍物"""
+    x: float
+    y: float
+    radius: float
+    type: str = 'circle'
+
+
+@dataclass
+class RectangleObstacle:
+    """矩形障碍物"""
+    x: float
+    y: float
+    width: float
+    height: float
+    angle: float = 0.0
+    type: str = 'rectangle'
 
 
 class Obstacle:
@@ -22,7 +50,11 @@ class Obstacle:
         """检查点是否与障碍物碰撞"""
         raise NotImplementedError("子类必须实现此方法")
 
-    def check_line_collision(self, start: Tuple[float, float], end: Tuple[float, float]) -> bool:
+    def check_line_collision(
+        self,
+        start: Tuple[float, float],
+        end: Tuple[float, float]
+    ) -> bool:
         """检查线段是否与障碍物碰撞"""
         raise NotImplementedError("子类必须实现此方法")
 
@@ -137,7 +169,7 @@ class Environment:
         """
         self.width = width
         self.height = height
-        self.obstacles: List[Obstacle] = []
+        self.obstacles: List[Union[CircleObstacle, RectangleObstacle]] = []
 
         # 如果提供了地图文件，从文件加载环境
         if map_path:
@@ -148,49 +180,68 @@ class Environment:
         x: float,
         y: float,
         obstacle_type: str = "circle",
-        radius: float = 1.0,
-        width: float = 1.0,
-        height: float = 1.0,
+        radius: Optional[float] = None,
+        width: Optional[float] = None,
+        height: Optional[float] = None,
         angle: float = 0.0
     ) -> None:
         """
-        向环境中添加障碍物
+        添加障碍物
 
         参数:
-            x, y: 障碍物中心坐标
-            obstacle_type: 障碍物类型，'circle'或'rectangle'
-            radius: 圆形障碍物的半径
-            width, height: 矩形障碍物的宽度和高度
-            angle: 矩形障碍物的旋转角度（弧度）
+            x: 障碍物中心x坐标
+            y: 障碍物中心y坐标
+            obstacle_type: 障碍物类型 ("circle" 或 "rectangle")
+            radius: 圆形障碍物半径
+            width: 矩形障碍物宽度
+            height: 矩形障碍物高度
+            angle: 矩形障碍物旋转角度（弧度）
         """
-        if obstacle_type == "circle":
-            self.obstacles.append(CircleObstacle(x, y, radius))
-        elif obstacle_type == "rectangle":
+        if obstacle_type == "circle" and radius is not None:
+            self.obstacles.append(CircleObstacle(x=x, y=y, radius=radius))
+        elif obstacle_type == "rectangle" and width is not None and height is not None:
             self.obstacles.append(
-                RectangleObstacle(x, y, width, height, angle))
+                RectangleObstacle(
+                    x=x, y=y,
+                    width=width,
+                    height=height,
+                    angle=angle
+                )
+            )
         else:
-            raise ValueError(f"未知的障碍物类型: {obstacle_type}")
+            raise ValueError("无效的障碍物参数")
 
     def check_collision(self, point: Tuple[float, float]) -> bool:
         """
-        检查点是否与任意障碍物碰撞
+        检查点是否与障碍物碰撞
 
         参数:
-            point: 待检测点的坐标 (x, y)
+            point: 待检查的点坐标 (x, y)
 
         返回:
-            如果碰撞返回True，否则返回False
+            是否发生碰撞
         """
-        # 检查是否超出边界
-        if (point[0] < 0 or point[0] > self.width or
-                point[1] < 0 or point[1] > self.height):
+        x, y = point
+        
+        # 检查是否在环境边界内
+        if not (0 <= x <= self.width and 0 <= y <= self.height):
             return True
-
-        # 检查是否与任意障碍物碰撞
-        for obs in self.obstacles:
-            if obs.check_collision(point):
-                return True
-
+        
+        # 检查是否与障碍物碰撞
+        for obstacle in self.obstacles:
+            if isinstance(obstacle, CircleObstacle):
+                # 圆形障碍物碰撞检测
+                dist = np.sqrt(
+                    (x - obstacle.x) ** 2 + (y - obstacle.y) ** 2
+                )
+                if dist <= obstacle.radius:
+                    return True
+            else:
+                # 矩形障碍物碰撞检测（简化版，不考虑旋转）
+                if (abs(x - obstacle.x) <= obstacle.width / 2 and
+                    abs(y - obstacle.y) <= obstacle.height / 2):
+                    return True
+        
         return False
 
     def check_segment_collision(self, start: Tuple[float, float], end: Tuple[float, float]) -> bool:
@@ -213,10 +264,22 @@ class Environment:
 
         # 检查是否与任意障碍物碰撞
         for obs in self.obstacles:
-            if obs.check_line_collision(start, end):
-                return False
+            if isinstance(obs, CircleObstacle):
+                # 圆形障碍物碰撞检测
+                dist = np.sqrt(
+                    (start[0] - obs.x) ** 2 + (start[1] - obs.y) ** 2
+                )
+                if dist <= obs.radius:
+                    return True
+            elif isinstance(obs, RectangleObstacle):
+                # 矩形障碍物碰撞检测（简化版，不考虑旋转）
+                if (abs(start[0] - obs.x) <= obs.width / 2 and
+                    abs(start[1] - obs.y) <= obs.height / 2) or \
+                   (abs(end[0] - obs.x) <= obs.width / 2 and
+                    abs(end[1] - obs.y) <= obs.height / 2):
+                    return True
 
-        return True
+        return False
 
     def load_map(self, map_path: str) -> None:
         """
@@ -229,7 +292,7 @@ class Environment:
         # 假设地图文件是YAML格式
         import yaml
         try:
-            with open(map_path, 'r') as f:
+            with open(map_path, 'r', encoding='utf-8') as f:
                 map_data = yaml.safe_load(f)
 
             # 解析地图数据
@@ -283,15 +346,19 @@ class Environment:
         # 保存到文件
         import yaml
         try:
-            with open(map_path, 'w') as f:
-                yaml.dump(map_data, f, default_flow_style=False)
+            with open(map_path, 'w', encoding='utf-8') as f:
+                yaml.dump(map_data, f, default_flow_style=False,
+                          allow_unicode=True)
         except Exception as e:
             print(f"保存地图失败: {e}")
 
     def plot_obstacles(self, ax) -> None:
         """绘制所有障碍物"""
         for obs in self.obstacles:
-            obs.plot(ax)
+            if isinstance(obs, CircleObstacle):
+                obs.plot(ax)
+            elif isinstance(obs, RectangleObstacle):
+                obs.plot(ax)
 
     def visualize(self, figsize: Tuple[int, int] = (10, 8)) -> None:
         """可视化整个环境"""
@@ -357,6 +424,121 @@ class Environment:
         ax.legend()
 
         plt.show()
+
+    def to_grid(
+        self,
+        grid_size: Tuple[int, int] = (64, 64)
+    ) -> np.ndarray:
+        """
+        将环境转换为栅格表示
+
+        参数:
+            grid_size: 栅格大小 (width, height)
+
+        返回:
+            栅格化的环境表示，0表示空闲，1表示障碍物
+        """
+        grid_width, grid_height = grid_size
+        grid = np.zeros((grid_height, grid_width), dtype=np.float32)
+        
+        # 计算栅格分辨率
+        cell_width = self.width / grid_width
+        cell_height = self.height / grid_height
+        
+        # 对每个栅格进行采样
+        for i in range(grid_height):
+            for j in range(grid_width):
+                # 计算栅格中心点坐标
+                x = (j + 0.5) * cell_width
+                y = (i + 0.5) * cell_height
+                
+                # 检查是否碰撞
+                if self.check_collision((x, y)):
+                    grid[i, j] = 1.0
+        
+        return grid
+
+    def save(self, filepath: str) -> None:
+        """
+        保存环境到文件
+
+        参数:
+            filepath: 保存路径
+        """
+        import json
+        
+        # 将障碍物转换为字典
+        obstacles_dict = []
+        for obs in self.obstacles:
+            if isinstance(obs, CircleObstacle):
+                obstacles_dict.append({
+                    'type': 'circle',
+                    'x': obs.x,
+                    'y': obs.y,
+                    'radius': obs.radius
+                })
+            else:
+                obstacles_dict.append({
+                    'type': 'rectangle',
+                    'x': obs.x,
+                    'y': obs.y,
+                    'width': obs.width,
+                    'height': obs.height,
+                    'angle': obs.angle
+                })
+        
+        # 保存环境配置
+        env_dict = {
+            'width': self.width,
+            'height': self.height,
+            'obstacles': obstacles_dict
+        }
+        
+        with open(filepath, 'w') as f:
+            json.dump(env_dict, f, indent=2)
+
+    @classmethod
+    def load(cls, filepath: str) -> 'Environment':
+        """
+        从文件加载环境
+
+        参数:
+            filepath: 文件路径
+
+        返回:
+            Environment 对象
+        """
+        import json
+        
+        with open(filepath, 'r') as f:
+            env_dict = json.load(f)
+        
+        # 创建环境
+        env = cls(
+            width=env_dict['width'],
+            height=env_dict['height']
+        )
+        
+        # 添加障碍物
+        for obs_dict in env_dict['obstacles']:
+            if obs_dict['type'] == 'circle':
+                env.add_obstacle(
+                    x=obs_dict['x'],
+                    y=obs_dict['y'],
+                    obstacle_type='circle',
+                    radius=obs_dict['radius']
+                )
+            else:
+                env.add_obstacle(
+                    x=obs_dict['x'],
+                    y=obs_dict['y'],
+                    obstacle_type='rectangle',
+                    width=obs_dict['width'],
+                    height=obs_dict['height'],
+                    angle=obs_dict.get('angle', 0.0)
+                )
+        
+        return env
 
 
 if __name__ == "__main__":

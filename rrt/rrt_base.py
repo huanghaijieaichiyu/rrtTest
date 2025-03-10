@@ -1,13 +1,19 @@
-"""
-基础RRT (快速探索随机树) 算法实现
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
 
-RRT是一种用于高维空间中的路径规划算法。该算法通过随机采样，
-逐步扩展搜索树，最终找到从起点到目标点的可行路径。
+"""
+RRT基础算法实现
+
+包含RRT算法的基本功能：
+- 随机采样
+- 寻找最近节点
+- 路径扩展
+- 碰撞检测
 """
 
 import numpy as np
 import matplotlib.pyplot as plt
-from typing import Tuple, List, Optional, Dict, Any, Callable
+from typing import List, Tuple, Optional
 
 
 class Node:
@@ -18,10 +24,10 @@ class Node:
     def __init__(self, x: float, y: float):
         self.x = x
         self.y = y
-        self.path_x = []  # 从根节点到当前节点的路径x坐标
-        self.path_y = []  # 从根节点到当前节点的路径y坐标
-        self.parent = None  # 父节点
-        self.cost = 0.0  # 从起点到该节点的代价
+        self.path_x: List[float] = []  # 从根节点到当前节点的路径x坐标
+        self.path_y: List[float] = []  # 从根节点到当前节点的路径y坐标
+        self.parent: Optional['Node'] = None  # 父节点
+        self.cost: float = 0.0  # 从起点到该节点的代价
 
 
 class RRT:
@@ -137,7 +143,7 @@ class RRT:
             (node.x - n.x) ** 2 + (node.y - n.y) ** 2
             for n in self.node_list
         ]
-        return np.argmin(distances)
+        return int(np.argmin(distances))
 
     def _steer(self, from_node: Node, to_node: Node) -> Node:
         """从一个节点朝向另一个节点扩展一定距离"""
@@ -244,7 +250,7 @@ class RRT:
                 )
 
         # 设置坐标轴范围
-        plt.axis([self.min_x, self.max_x, self.min_y, self.max_y])
+        plt.axis((self.min_x, self.max_x, self.min_y, self.max_y))
         plt.grid(True)
         plt.title(f"RRT 搜索树 (迭代: {iteration})")
         plt.pause(0.01)
@@ -277,11 +283,19 @@ class RRT:
             path_y = [p[1] for p in self.path]
             plt.plot(path_x, path_y, '-b', linewidth=3, label="规划路径")
 
-        plt.axis([self.min_x, self.max_x, self.min_y, self.max_y])
+        plt.axis((self.min_x, self.max_x, self.min_y, self.max_y))
         plt.grid(True)
         plt.title("RRT路径规划结果")
         plt.legend()
         plt.show()
+
+    def check_line_collision(
+        self,
+        start: Tuple[float, float],
+        end: Tuple[float, float]
+    ) -> bool:
+        """检查线段是否与障碍物碰撞"""
+        raise NotImplementedError("子类必须实现此方法")
 
 
 if __name__ == "__main__":

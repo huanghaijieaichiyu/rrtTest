@@ -1,0 +1,22 @@
+# Pygame 仿真器配置文件
+
+# 窗口设置
+window_width: 1200
+window_height: 900
+window_title: "RRT-路径规划仿真器"
+
+# 仿真参数
+scale: 8  # 像素/米
+fps: 60   # 帧率
+dt: 0.05  # 仿真时间步长(秒)
+lookahead: 5.0  # 路径跟踪前瞻距离
+
+# 车辆参数
+vehicle:
+  length: 4.5     # 车辆长度(米)
+  width: 1.8      # 车辆宽度(米)
+  wheelbase: 2.7  # 轴距(米)
+  max_speed: 15.0  # 最大速度(m/s)
+  max_accel: 2.0   # 最大加速度(m/s^2)
+  max_brake: 4.0   # 最大制动(m/s^2)
+  max_steer: 0.7854  # 最大转向角(弧度), 约45度 

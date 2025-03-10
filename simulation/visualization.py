@@ -1,13 +1,22 @@
-"""
-可视化工具模块
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
 
-提供用于可视化路径规划和仿真结果的工具。
+"""
+可视化模块
+
+提供各种可视化功能：
+- 路径绘制
+- 多路径比较
+- 搜索树显示
+- 动画生成
+- 性能指标展示
 """
 
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
-from typing import Tuple, List, Dict, Any, Optional
+from matplotlib.figure import Figure
+from typing import List, Optional, Sequence, Tuple, Any
 import matplotlib.patches as mpatches
 
 from .environment import Environment
@@ -20,7 +29,7 @@ class Visualization:
     提供用于可视化路径规划和仿真结果的工具。
     """
 
-    def __init__(self, env: Environment = None):
+    def __init__(self, env: Optional[Environment] = None):
         """
         初始化可视化工具
 
@@ -28,7 +37,7 @@ class Visualization:
             env: 环境对象
         """
         self.env = env
-        self.fig = None
+        self.fig: Optional[Figure] = None
         self.ax = None
 
     def set_environment(self, env: Environment) -> None:
@@ -52,7 +61,7 @@ class Visualization:
         path_width: float = 2.0,
         title: str = '规划路径',
         save_path: Optional[str] = None
-    ) -> plt.Figure:
+    ) -> Figure:
         """
         绘制路径
 
@@ -148,7 +157,7 @@ class Visualization:
         show_environment: bool = True,
         title: str = '多路径对比',
         save_path: Optional[str] = None
-    ) -> plt.Figure:
+    ) -> Figure:
         """
         绘制多条路径进行对比
 
@@ -244,7 +253,7 @@ class Visualization:
         path_color: str = 'blue',
         title: str = '搜索树',
         save_path: Optional[str] = None
-    ) -> plt.Figure:
+    ) -> Figure:
         """
         绘制搜索树
 
@@ -432,11 +441,11 @@ class Visualization:
 
     def plot_metrics(
         self,
-        metrics: Dict[str, List[float]],
-        figsize: Tuple[int, int] = (10, 6),
+        metrics: dict[str, list[float]],
+        figsize: tuple[int, int] = (10, 6),
         title: str = '性能指标',
-        save_path: Optional[str] = None
-    ) -> plt.Figure:
+        save_path: str | None = None
+    ) -> Figure:
         """
         绘制性能指标
 

@@ -1,548 +1,399 @@
-"""
-RRT神经网络模型模块
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
 
-提供用于增强RRT算法的神经网络模型。
-这些模型可以用于：
-1. 优化采样策略
-2. 预测碰撞可能性
-3. 学习启发式函数
-4. 端到端路径规划
+"""
+基于深度学习的 RRT 算法实现
+
+结合神经网络来优化 RRT 的采样策略和路径优化。主要包括：
+1. 采样网络：学习更有效的采样分布
+2. 评估网络：预测路径的可行性和质量
+3. 优化网络：优化路径的平滑度和安全性
 """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import numpy as np
 from typing import List, Tuple, Dict, Any, Optional
+from rrt.rrt_star import RRTStar
 
 
 class SamplingNetwork(nn.Module):
-    """
-    采样网络
-
-    用于学习RRT算法的采样策略，根据当前状态和目标状态预测下一个采样点。
-    """
-
-    def __init__(
-        self,
-        # [start_x, start_y, goal_x, goal_y, width, height]
-        input_dim: int = 6,
-        hidden_sizes: List[int] = [128, 64],
-        output_dim: int = 2,  # [x, y]
-        activation: str = 'relu',
-        use_batch_norm: bool = True,
-        dropout_prob: float = 0.1
-    ):
+    """采样策略网络，学习更有效的采样分布"""
+    
+    def __init__(self, state_dim: int = 4, hidden_dim: int = 64):
         """
         初始化采样网络
-
+        
         参数:
-            input_dim: 输入维度
-            hidden_sizes: 隐藏层大小列表
-            output_dim: 输出维度
-            activation: 激活函数
-            use_batch_norm: 是否使用批标准化
-            dropout_prob: Dropout概率
+            state_dim: 状态空间维度 (x, y, 起点距离, 终点距离)
+            hidden_dim: 隐藏层维度
         """
-        super(SamplingNetwork, self).__init__()
-
-        # 保存参数
-        self.input_dim = input_dim
-        self.hidden_sizes = hidden_sizes
-        self.output_dim = output_dim
-        self.use_batch_norm = use_batch_norm
-
-        # 创建网络层
-        layers = []
-
-        # 输入层到第一个隐藏层
-        layers.append(nn.Linear(input_dim, hidden_sizes[0]))
-        if use_batch_norm:
-            layers.append(nn.BatchNorm1d(hidden_sizes[0]))
-
-        # 添加激活函数
-        if activation.lower() == 'relu':
-            layers.append(nn.ReLU())
-        elif activation.lower() == 'tanh':
-            layers.append(nn.Tanh())
-        elif activation.lower() == 'sigmoid':
-            layers.append(nn.Sigmoid())
-        else:
-            raise ValueError(f"不支持的激活函数: {activation}")
-
-        # 添加Dropout
-        layers.append(nn.Dropout(dropout_prob))
-
-        # 添加隐藏层
-        for i in range(len(hidden_sizes) - 1):
-            layers.append(nn.Linear(hidden_sizes[i], hidden_sizes[i+1]))
-            if use_batch_norm:
-                layers.append(nn.BatchNorm1d(hidden_sizes[i+1]))
-
-            # 添加激活函数
-            if activation.lower() == 'relu':
-                layers.append(nn.ReLU())
-            elif activation.lower() == 'tanh':
-                layers.append(nn.Tanh())
-            elif activation.lower() == 'sigmoid':
-                layers.append(nn.Sigmoid())
-
-            # 添加Dropout
-            layers.append(nn.Dropout(dropout_prob))
-
-        # 输出层
-        layers.append(nn.Linear(hidden_sizes[-1], output_dim))
-        # 输出使用Sigmoid激活，将输出限制在[0, 1]范围内，用于表示归一化的坐标
-        layers.append(nn.Sigmoid())
-
-        # 创建网络
-        self.network = nn.Sequential(*layers)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        super().__init__()
+        
+        self.net = nn.Sequential(
+            nn.Linear(state_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 2),  # 输出采样点的 (x, y) 坐标
+            nn.Tanh()  # 将输出映射到 [-1, 1]
+        )
+        
+    def forward(self, state: torch.Tensor) -> torch.Tensor:
         """
         前向传播
-
+        
         参数:
-            x: 输入张量，形状为 [batch_size, input_dim]
-
+            state: 当前状态 [batch_size, state_dim]
+            
         返回:
-            预测的采样点，形状为 [batch_size, output_dim]
+            采样点坐标 [batch_size, 2]
         """
-        return self.network(x)
+        return self.net(state)
 
-    def sample(
-        self,
-        start: Tuple[float, float],
-        goal: Tuple[float, float],
-        width: float,
-        height: float,
-        batch_size: int = 1,
-        device: Optional[torch.device] = None
-    ) -> torch.Tensor:
+
+class EvaluationNetwork(nn.Module):
+    """路径评估网络，预测路径的可行性和质量"""
+    
+    def __init__(self, path_points: int = 10, hidden_dim: int = 64):
         """
-        生成采样点
-
+        初始化评估网络
+        
         参数:
-            start: 起点坐标 (x, y)
-            goal: 目标点坐标 (x, y)
-            width: 环境宽度
-            height: 环境高度
-            batch_size: 批大小
-            device: 设备
-
-        返回:
-            采样点张量，形状为 [batch_size, 2]
+            path_points: 路径点数量
+            hidden_dim: 隐藏层维度
         """
-        # 归一化坐标
-        start_x_norm = start[0] / width
-        start_y_norm = start[1] / height
-        goal_x_norm = goal[0] / width
-        goal_y_norm = goal[1] / height
-
-        # 创建输入张量
-        x = torch.tensor(
-            [start_x_norm, start_y_norm, goal_x_norm, goal_y_norm, 1.0, 1.0],
-            dtype=torch.float32
+        super().__init__()
+        
+        self.path_points = path_points
+        
+        # 使用 1D 卷积处理路径序列
+        self.conv = nn.Sequential(
+            nn.Conv1d(2, hidden_dim, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Conv1d(hidden_dim, hidden_dim, kernel_size=3, padding=1),
+            nn.ReLU()
         )
+        
+        # 全连接层输出评估结果
+        self.fc = nn.Sequential(
+            nn.Linear(hidden_dim * path_points, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 3)  # [可行性, 长度得分, 平滑度得分]
+        )
+        
+    def forward(self, path: torch.Tensor) -> torch.Tensor:
+        """
+        前向传播
+        
+        参数:
+            path: 路径点序列 [batch_size, path_points, 2]
+            
+        返回:
+            评估结果 [batch_size, 3]
+        """
+        # [batch_size, 2, path_points]
+        x = path.transpose(1, 2)
+        
+        # 特征提取
+        x = self.conv(x)
+        
+        # 展平
+        x = x.reshape(x.size(0), -1)
+        
+        # 评估
+        return self.fc(x)
 
-        # 扩展为批大小
-        x = x.unsqueeze(0).repeat(batch_size, 1)
 
-        # 移动到指定设备
-        if device is not None:
-            x = x.to(device)
-            self.to(device)
+class OptimizationNetwork(nn.Module):
+    """路径优化网络，优化路径的平滑度和安全性"""
+    
+    def __init__(self, path_points: int = 10, hidden_dim: int = 64):
+        """
+        初始化优化网络
+        
+        参数:
+            path_points: 路径点数量
+            hidden_dim: 隐藏层维度
+        """
+        super().__init__()
+        
+        self.path_points = path_points
+        
+        # 使用 Transformer 编码器处理路径序列
+        self.transformer = nn.TransformerEncoder(
+            nn.TransformerEncoderLayer(
+                d_model=2,
+                nhead=2,
+                dim_feedforward=hidden_dim
+            ),
+            num_layers=2
+        )
+        
+        # 解码器生成优化后的路径点
+        self.decoder = nn.Sequential(
+            nn.Linear(2, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 2)
+        )
+        
+    def forward(self, path: torch.Tensor) -> torch.Tensor:
+        """
+        前向传播
+        
+        参数:
+            path: 路径点序列 [batch_size, path_points, 2]
+            
+        返回:
+            优化后的路径点 [batch_size, path_points, 2]
+        """
+        # [path_points, batch_size, 2]
+        x = path.transpose(0, 1)
+        
+        # Transformer 编码
+        x = self.transformer(x)
+        
+        # 解码优化后的路径点
+        x = self.decoder(x)
+        
+        # [batch_size, path_points, 2]
+        return x.transpose(0, 1)
 
-        # 预测采样点
+
+class NeuralRRT(RRTStar):
+    """基于神经网络增强的 RRT 算法"""
+    
+    def __init__(self, 
+                 start: Tuple[float, float],
+                 goal: Tuple[float, float],
+                 env: 'Environment',
+                 max_iterations: int = 1000,
+                 step_size: float = 5.0,
+                 sample_size: int = 100,
+                 device: str = 'cuda' if torch.cuda.is_available() else 'cpu'):
+        """
+        初始化神经网络增强的 RRT
+        
+        参数:
+            start: 起点坐标
+            goal: 终点坐标
+            env: 环境对象
+            max_iterations: 最大迭代次数
+            step_size: 步长
+            sample_size: 每次采样的批量大小
+            device: 计算设备
+        """
+        super().__init__(start, goal, env, max_iterations, step_size)
+        
+        self.sample_size = sample_size
+        self.device = device
+        
+        # 初始化神经网络
+        self.sampling_net = SamplingNetwork().to(device)
+        self.evaluation_net = EvaluationNetwork().to(device)
+        self.optimization_net = OptimizationNetwork().to(device)
+        
+    def _get_state_features(self, point: Tuple[float, float]) -> torch.Tensor:
+        """获取状态特征"""
+        x, y = point
+        start_dist = np.sqrt((x - self.start[0])**2 + (y - self.start[1])**2)
+        goal_dist = np.sqrt((x - self.goal[0])**2 + (y - self.goal[1])**2)
+        
+        return torch.tensor([x, y, start_dist, goal_dist], 
+                          device=self.device)
+    
+    def _sample_batch(self) -> torch.Tensor:
+        """使用神经网络进行批量采样"""
+        # 获取当前节点状态
+        current = self.nodes[-1]
+        state = self._get_state_features((current.x, current.y))
+        
+        # 扩展为批量
+        state = state.expand(self.sample_size, -1)
+        
+        # 采样新点
         with torch.no_grad():
-            sampled_points_norm = self.forward(x)
-
-        # 反归一化
-        sampled_points = torch.zeros_like(sampled_points_norm)
-        sampled_points[:, 0] = sampled_points_norm[:, 0] * width
-        sampled_points[:, 1] = sampled_points_norm[:, 1] * height
-
-        return sampled_points
-
-
-class CollisionNet(nn.Module):
-    """
-    碰撞预测网络
-
-    用于预测线段是否与环境中的障碍物发生碰撞。
-    """
-
-    def __init__(
-        self,
-        input_dim: int = 4,  # [start_x, start_y, end_x, end_y]
-        hidden_sizes: List[int] = [128, 64],
-        use_batch_norm: bool = True,
-        dropout_prob: float = 0.1
-    ):
-        """
-        初始化碰撞预测网络
-
-        参数:
-            input_dim: 输入维度
-            hidden_sizes: 隐藏层大小列表
-            use_batch_norm: 是否使用批标准化
-            dropout_prob: Dropout概率
-        """
-        super(CollisionNet, self).__init__()
-
-        # 保存参数
-        self.input_dim = input_dim
-        self.hidden_sizes = hidden_sizes
-        self.use_batch_norm = use_batch_norm
-
-        # 创建网络层
-        layers = []
-
-        # 输入层到第一个隐藏层
-        layers.append(nn.Linear(input_dim, hidden_sizes[0]))
-        if use_batch_norm:
-            layers.append(nn.BatchNorm1d(hidden_sizes[0]))
-        layers.append(nn.ReLU())
-        layers.append(nn.Dropout(dropout_prob))
-
-        # 添加隐藏层
-        for i in range(len(hidden_sizes) - 1):
-            layers.append(nn.Linear(hidden_sizes[i], hidden_sizes[i+1]))
-            if use_batch_norm:
-                layers.append(nn.BatchNorm1d(hidden_sizes[i+1]))
-            layers.append(nn.ReLU())
-            layers.append(nn.Dropout(dropout_prob))
-
-        # 输出层，输出碰撞概率
-        layers.append(nn.Linear(hidden_sizes[-1], 1))
-        layers.append(nn.Sigmoid())
-
-        # 创建网络
-        self.network = nn.Sequential(*layers)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        前向传播
-
-        参数:
-            x: 输入张量，形状为 [batch_size, input_dim]
-
-        返回:
-            碰撞概率，形状为 [batch_size, 1]
-        """
-        return self.network(x)
-
-    def predict_collision(
-        self,
-        start: Tuple[float, float],
-        end: Tuple[float, float],
-        threshold: float = 0.5,
-        normalize: bool = True,
-        width: float = 100.0,
-        height: float = 100.0,
-        device: Optional[torch.device] = None
-    ) -> bool:
-        """
-        预测线段是否与障碍物碰撞
-
-        参数:
-            start: 线段起点坐标 (x, y)
-            end: 线段终点坐标 (x, y)
-            threshold: 碰撞概率阈值
-            normalize: 是否归一化坐标
-            width: 环境宽度，用于归一化
-            height: 环境高度，用于归一化
-            device: 设备
-
-        返回:
-            如果预测碰撞则返回True，否则返回False
-        """
-        # 归一化坐标
-        if normalize:
-            start_x_norm = start[0] / width
-            start_y_norm = start[1] / height
-            end_x_norm = end[0] / width
-            end_y_norm = end[1] / height
-        else:
-            start_x_norm = start[0]
-            start_y_norm = start[1]
-            end_x_norm = end[0]
-            end_y_norm = end[1]
-
-        # 创建输入张量
-        x = torch.tensor(
-            [start_x_norm, start_y_norm, end_x_norm, end_y_norm],
-            dtype=torch.float32
-        )
-
-        # 扩展为批大小1
-        x = x.unsqueeze(0)
-
-        # 移动到指定设备
-        if device is not None:
-            x = x.to(device)
-            self.to(device)
-
-        # 预测碰撞概率
+            samples = self.sampling_net(state)
+            
+        # 将采样点映射到环境范围
+        samples = samples * torch.tensor([self.env.width/2, self.env.height/2],
+                                       device=self.device)
+        
+        return samples
+    
+    def _evaluate_path(self, path: List[Tuple[float, float]]) -> torch.Tensor:
+        """评估路径质量"""
+        # 转换为张量
+        path_tensor = torch.tensor(path, device=self.device)
+        path_tensor = path_tensor.unsqueeze(0)  # 添加批次维度
+        
+        # 评估路径
         with torch.no_grad():
-            collision_prob = self.forward(x)
-
-        # 根据阈值判断是否碰撞
-        return collision_prob.item() > threshold
-
-
-class HeuristicNet(nn.Module):
-    """
-    启发式函数网络
-
-    用于学习RRT*算法中的启发式函数，评估节点的代价。
-    """
-
-    def __init__(
-        self,
-        input_dim: int = 6,  # [node_x, node_y, goal_x, goal_y, width, height]
-        hidden_sizes: List[int] = [128, 64],
-        use_batch_norm: bool = True,
-        dropout_prob: float = 0.1
-    ):
-        """
-        初始化启发式函数网络
-
-        参数:
-            input_dim: 输入维度
-            hidden_sizes: 隐藏层大小列表
-            use_batch_norm: 是否使用批标准化
-            dropout_prob: Dropout概率
-        """
-        super(HeuristicNet, self).__init__()
-
-        # 保存参数
-        self.input_dim = input_dim
-        self.hidden_sizes = hidden_sizes
-        self.use_batch_norm = use_batch_norm
-
-        # 创建网络层
-        layers = []
-
-        # 输入层到第一个隐藏层
-        layers.append(nn.Linear(input_dim, hidden_sizes[0]))
-        if use_batch_norm:
-            layers.append(nn.BatchNorm1d(hidden_sizes[0]))
-        layers.append(nn.ReLU())
-        layers.append(nn.Dropout(dropout_prob))
-
-        # 添加隐藏层
-        for i in range(len(hidden_sizes) - 1):
-            layers.append(nn.Linear(hidden_sizes[i], hidden_sizes[i+1]))
-            if use_batch_norm:
-                layers.append(nn.BatchNorm1d(hidden_sizes[i+1]))
-            layers.append(nn.ReLU())
-            layers.append(nn.Dropout(dropout_prob))
-
-        # 输出层，输出代价估计
-        layers.append(nn.Linear(hidden_sizes[-1], 1))
-        # 使用ReLU确保代价非负
-        layers.append(nn.ReLU())
-
-        # 创建网络
-        self.network = nn.Sequential(*layers)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        前向传播
-
-        参数:
-            x: 输入张量，形状为 [batch_size, input_dim]
-
-        返回:
-            代价估计，形状为 [batch_size, 1]
-        """
-        return self.network(x)
-
-    def estimate_cost(
-        self,
-        node_pos: Tuple[float, float],
-        goal_pos: Tuple[float, float],
-        normalize: bool = True,
-        width: float = 100.0,
-        height: float = 100.0,
-        device: Optional[torch.device] = None
-    ) -> float:
-        """
-        估计从节点到目标的代价
-
-        参数:
-            node_pos: 节点位置 (x, y)
-            goal_pos: 目标位置 (x, y)
-            normalize: 是否归一化坐标
-            width: 环境宽度，用于归一化
-            height: 环境高度，用于归一化
-            device: 设备
-
-        返回:
-            估计的代价值
-        """
-        # 归一化坐标
-        if normalize:
-            node_x_norm = node_pos[0] / width
-            node_y_norm = node_pos[1] / height
-            goal_x_norm = goal_pos[0] / width
-            goal_y_norm = goal_pos[1] / height
-            width_norm = 1.0
-            height_norm = 1.0
-        else:
-            node_x_norm = node_pos[0]
-            node_y_norm = node_pos[1]
-            goal_x_norm = goal_pos[0]
-            goal_y_norm = goal_pos[1]
-            width_norm = width
-            height_norm = height
-
-        # 创建输入张量
-        x = torch.tensor(
-            [node_x_norm, node_y_norm, goal_x_norm,
-                goal_y_norm, width_norm, height_norm],
-            dtype=torch.float32
-        )
-
-        # 扩展为批大小1
-        x = x.unsqueeze(0)
-
-        # 移动到指定设备
-        if device is not None:
-            x = x.to(device)
-            self.to(device)
-
-        # 估计代价
+            scores = self.evaluation_net(path_tensor)
+            
+        return scores[0]  # 返回单个路径的评估结果
+    
+    def _optimize_path(self, path: List[Tuple[float, float]]) -> List[Tuple[float, float]]:
+        """优化路径"""
+        # 转换为张量
+        path_tensor = torch.tensor(path, device=self.device)
+        path_tensor = path_tensor.unsqueeze(0)  # 添加批次维度
+        
+        # 优化路径
         with torch.no_grad():
-            cost = self.forward(x)
-
-        return cost.item()
-
-
-class EndToEndRRTNet(nn.Module):
-    """
-    端到端RRT网络
-
-    将RRT算法端到端地实现为神经网络，同时结合采样、碰撞检测和代价估计功能。
-    """
-
-    def __init__(
-        self,
-        input_channels: int = 3,  # [起点图层, 终点图层, 障碍物图层]
-        hidden_channels: List[int] = [16, 32, 64],
-        output_channels: int = 1,  # 路径概率图
-        kernel_size: int = 3,
-        use_batch_norm: bool = True
-    ):
+            optimized = self.optimization_net(path_tensor)
+            
+        # 转换回列表
+        return optimized[0].cpu().numpy().tolist()
+    
+    def train_step(self, 
+                  paths: List[List[Tuple[float, float]]], 
+                  labels: List[float],
+                  optimizer: torch.optim.Optimizer) -> float:
         """
-        初始化端到端RRT网络
-
+        训练一个批次
+        
         参数:
-            input_channels: 输入通道数
-            hidden_channels: 隐藏层通道数列表
-            output_channels: 输出通道数
-            kernel_size: 卷积核大小
-            use_batch_norm: 是否使用批标准化
-        """
-        super(EndToEndRRTNet, self).__init__()
-
-        # 保存参数
-        self.input_channels = input_channels
-        self.hidden_channels = hidden_channels
-        self.output_channels = output_channels
-        self.kernel_size = kernel_size
-
-        # 计算padding
-        padding = kernel_size // 2
-
-        # 创建编码器（下采样）
-        self.encoder = nn.ModuleList()
-        in_channels = input_channels
-
-        for out_channels in hidden_channels:
-            block = []
-
-            # 卷积层
-            block.append(
-                nn.Conv2d(in_channels, out_channels,
-                          kernel_size, padding=padding)
-            )
-
-            # 批标准化
-            if use_batch_norm:
-                block.append(nn.BatchNorm2d(out_channels))
-
-            # 激活函数
-            block.append(nn.ReLU())
-
-            # 下采样
-            block.append(nn.MaxPool2d(2))
-
-            self.encoder.append(nn.Sequential(*block))
-            in_channels = out_channels
-
-        # 创建解码器（上采样）
-        self.decoder = nn.ModuleList()
-        hidden_channels.reverse()
-
-        for i, out_channels in enumerate(hidden_channels[1:] + [input_channels]):
-            block = []
-
-            # 上采样
-            block.append(nn.Upsample(scale_factor=2,
-                         mode='bilinear', align_corners=True))
-
-            # 卷积层
-            in_ch = hidden_channels[i]
-            block.append(
-                nn.Conv2d(in_ch, out_channels, kernel_size, padding=padding)
-            )
-
-            # 批标准化
-            if use_batch_norm and i < len(hidden_channels) - 1:
-                block.append(nn.BatchNorm2d(out_channels))
-
-            # 激活函数
-            if i < len(hidden_channels) - 1:
-                block.append(nn.ReLU())
-
-            self.decoder.append(nn.Sequential(*block))
-
-        # 输出层
-        self.output_layer = nn.Sequential(
-            nn.Conv2d(input_channels, output_channels, kernel_size=1),
-            nn.Sigmoid()
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        前向传播
-
-        参数:
-            x: 输入张量，形状为 [batch_size, input_channels, height, width]
-
+            paths: 路径列表
+            labels: 标签列表（路径质量得分）
+            optimizer: 优化器
+            
         返回:
-            预测的路径概率图，形状为 [batch_size, output_channels, height, width]
+            损失值
         """
-        # 编码器前向传播
-        encoder_features = []
-        for encoder_layer in self.encoder:
-            x = encoder_layer(x)
-            encoder_features.append(x)
+        # 转换为张量
+        paths = torch.tensor(paths, device=self.device)
+        labels = torch.tensor(labels, device=self.device)
+        
+        # 评估路径
+        scores = self.evaluation_net(paths)
+        
+        # 计算损失
+        loss = nn.MSELoss()(scores[:, 1], labels)  # 使用长度得分
+        
+        # 反向传播
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        
+        return loss.item()
+    
+    def plan(self) -> Optional[List[Tuple[float, float]]]:
+        """规划路径"""
+        path = super().plan()
+        
+        if path:
+            # 评估路径质量
+            scores = self._evaluate_path(path)
+            print(f"路径评估得分: 可行性={scores[0]:.2f}, " 
+                  f"长度={scores[1]:.2f}, 平滑度={scores[2]:.2f}")
+            
+            # 优化路径
+            optimized_path = self._optimize_path(path)
+            
+            # 验证优化后的路径
+            if all(not self.env.check_collision(p) for p in optimized_path):
+                return optimized_path
+        
+        return path
 
-        # 解码器前向传播
-        encoder_features.reverse()
-        for i, decoder_layer in enumerate(self.decoder):
-            x = decoder_layer(x)
 
-            # 跳跃连接（除了最后一层）
-            if i < len(self.decoder) - 1:
-                x = x + encoder_features[i+1]
+def collect_training_data(env: 'Environment',
+                         num_episodes: int = 1000) -> Tuple[List, List]:
+    """
+    收集训练数据
+    
+    参数:
+        env: 环境对象
+        num_episodes: 收集的路径数量
+        
+    返回:
+        paths: 路径列表
+        scores: 得分列表
+    """
+    paths = []
+    scores = []
+    
+    rrt = RRTStar(start=(0, 0), goal=(100, 100), env=env)
+    
+    for _ in range(num_episodes):
+        # 随机生成起点和终点
+        start = (np.random.uniform(0, env.width),
+                np.random.uniform(0, env.height))
+        goal = (np.random.uniform(0, env.width),
+               np.random.uniform(0, env.height))
+        
+        rrt.start = start
+        rrt.goal = goal
+        
+        # 规划路径
+        path = rrt.plan()
+        
+        if path:
+            # 计算路径得分（示例：使用路径长度的倒数作为得分）
+            length = sum(np.sqrt((p2[0]-p1[0])**2 + (p2[1]-p1[1])**2)
+                        for p1, p2 in zip(path[:-1], path[1:]))
+            score = 1.0 / (1.0 + length)
+            
+            paths.append(path)
+            scores.append(score)
+    
+    return paths, scores
 
-        # 输出层
-        x = self.output_layer(x)
 
-        return x
+def train_neural_rrt(env: 'Environment',
+                    num_epochs: int = 100,
+                    batch_size: int = 32,
+                    learning_rate: float = 1e-4):
+    """
+    训练神经网络增强的 RRT
+    
+    参数:
+        env: 环境对象
+        num_epochs: 训练轮数
+        batch_size: 批次大小
+        learning_rate: 学习率
+    """
+    # 创建神经网络 RRT
+    neural_rrt = NeuralRRT(start=(0, 0), goal=(100, 100), env=env)
+    
+    # 收集训练数据
+    print("收集训练数据...")
+    paths, scores = collect_training_data(env)
+    
+    # 创建数据加载器
+    dataset = list(zip(paths, scores))
+    
+    # 创建优化器
+    optimizer = torch.optim.Adam(neural_rrt.parameters(), lr=learning_rate)
+    
+    # 训练循环
+    print("开始训练...")
+    for epoch in range(num_epochs):
+        # 打乱数据
+        np.random.shuffle(dataset)
+        
+        # 批次训练
+        total_loss = 0
+        num_batches = 0
+        
+        for i in range(0, len(dataset), batch_size):
+            batch = dataset[i:i+batch_size]
+            batch_paths, batch_scores = zip(*batch)
+            
+            # 训练一个批次
+            loss = neural_rrt.train_step(batch_paths, batch_scores, optimizer)
+            
+            total_loss += loss
+            num_batches += 1
+        
+        # 打印训练信息
+        avg_loss = total_loss / num_batches
+        print(f"Epoch {epoch+1}/{num_epochs}, Loss: {avg_loss:.4f}")
+    
+    print("训练完成!")
+    return neural_rrt
 
 
 # 测试代码
@@ -557,34 +408,30 @@ if __name__ == "__main__":
     width, height = 100.0, 100.0
 
     # 测试采样
-    samples = sampling_net.sample(start, goal, width, height, batch_size=5)
+    samples = sampling_net.forward(torch.tensor([start[0]/width, start[1]/height, 0.0, 0.0], dtype=torch.float32))
     print(f"生成的采样点:\n{samples}")
 
-    # 测试碰撞预测网络
-    collision_net = CollisionNet()
-    print(f"\n碰撞预测网络结构:\n{collision_net}")
+    # 测试评估网络
+    evaluation_net = EvaluationNetwork()
+    print(f"\n评估网络结构:\n{evaluation_net}")
 
-    # 测试碰撞预测
-    is_collision = collision_net.predict_collision(start, goal)
-    print(f"碰撞预测结果: {is_collision}")
+    # 测试评估
+    path = [start, goal]
+    scores = evaluation_net.forward(torch.tensor(path, dtype=torch.float32).unsqueeze(0))
+    print(f"路径评估结果: 可行性={scores[0][0]:.2f}, 长度得分={scores[0][1]:.2f}, 平滑度得分={scores[0][2]:.2f}")
 
-    # 测试启发式函数网络
-    heuristic_net = HeuristicNet()
-    print(f"\n启发式函数网络结构:\n{heuristic_net}")
+    # 测试优化网络
+    optimization_net = OptimizationNetwork()
+    print(f"\n优化网络结构:\n{optimization_net}")
 
-    # 测试代价估计
-    cost = heuristic_net.estimate_cost(start, goal)
-    print(f"代价估计结果: {cost}")
+    # 测试优化
+    optimized_path = optimization_net.forward(torch.tensor(path, dtype=torch.float32).unsqueeze(0))
+    print(f"优化后的路径点:\n{optimized_path}")
 
-    # 测试端到端RRT网络
-    end_to_end_net = EndToEndRRTNet()
-    print(f"\n端到端RRT网络结构:\n{end_to_end_net}")
+    # 测试神经网络增强的 RRT
+    env = Environment(width, height)
+    neural_rrt = NeuralRRT(start, goal, env)
+    print(f"\n神经网络增强的 RRT 结构:\n{neural_rrt}")
 
-    # 创建模拟输入
-    batch_size = 2
-    height, width = 64, 64
-    x = torch.randn(batch_size, 3, height, width)
-
-    # 前向传播
-    output = end_to_end_net(x)
-    print(f"端到端网络输出形状: {output.shape}")
+    # 测试训练
+    train_neural_rrt(env)
