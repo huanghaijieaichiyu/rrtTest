@@ -1,10 +1,8 @@
-numpy>=1.21.0
-torch>=1.9.0
-pygame>=2.0.1
+numpy>=1.20.0
 matplotlib>=3.4.0
-tqdm>=4.62.0
-PyYAML>=5.4.1
-scipy>=1.8.0
-opencv-python>=4.5.0
-shapely>=1.8.0
-casadi>=3.5.5 
+pygame>=2.0.0
+torch>=1.9.0
+tqdm>=4.60.0
+shapely>=1.7.1
+pyyaml>=5.4.0
+tensorboard>=2.5.0  # Optional for visualizing training 

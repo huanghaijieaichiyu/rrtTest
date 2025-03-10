@@ -448,6 +448,9 @@ class PathFollower:
             throttle *= 0.5
         elif abs(steer) > 0.3:
             throttle *= 0.7
+            # 如果车辆速度为0，应降低制动力
+            if vehicle.speed == 0:
+                brake = brake * 0.5
 
         return throttle, brake, steer
 

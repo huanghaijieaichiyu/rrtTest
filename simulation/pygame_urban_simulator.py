@@ -16,7 +16,8 @@ from simulation.dynamic_environment import (
     DynamicEnvironment,
     TrafficLightState,
     Pedestrian,
-    Vehicle
+    Vehicle,
+    MovementPattern
 )
 from rrt.rrt_star import RRTStar
 
@@ -41,7 +42,8 @@ class PygameUrbanSimulator:
         'car': (255, 50, 50),
         'pedestrian': (50, 50, 255),
         'path': (0, 200, 0),
-        'background': (230, 230, 230)
+        'background': (230, 230, 230),
+        'target': (0, 255, 0)
     }
 
     def __init__(
@@ -84,16 +86,13 @@ class PygameUrbanSimulator:
         self.start_point = None
         self.goal_point = None
         self.respect_red_light = True  # 是否遵守红灯
+        self.follow_target = False     # 是否跟随移动目标
+        self.replan_interval = 2.0     # 重新规划路径的时间间隔（秒）
+        self.last_replan_time = 0.0    # 上次重新规划路径的时间
 
         # 字体
         pygame.font.init()
-        try:
-            self.font = pygame.font.SysFont('STKAITI', 14)
-            self.big_font = pygame.font.SysFont('STKAITI', 20, bold=True)
-        except:
-            print("警告: STKAITI字体不可用，使用默认字体")
-            self.font = pygame.font.SysFont('SimHei', 14)  # 使用黑体作为备选
-            self.big_font = pygame.font.SysFont('SimHei', 20, bold=True)
+        self._init_fonts()
 
         # 控制参数
         self.show_rrt_tree = True
@@ -103,11 +102,59 @@ class PygameUrbanSimulator:
         self.step_mode = False
         self.planning = False
         self.replan = False
+        self.auto_replan = False       # 是否自动重新规划路径
 
         # 性能统计
         self.fps_history = []
         self.last_update_time = time.time()
         self.planning_time = 0
+
+        # 消息显示
+        self.message = ""
+        self.message_time = 0
+        self.message_duration = 3.0    # 消息显示时间（秒）
+
+    def _init_fonts(self):
+        """初始化字体"""
+        # 尝试加载中文字体
+        chinese_fonts = [
+            'SimHei', 'Microsoft YaHei', 'SimSun', 'NSimSun', 'FangSong', 'KaiTi',
+            'STHeiti', 'STKaiti', 'STSong', 'STFangsong', 'STXihei', 'STZhongsong',
+            'FZShuTi', 'FZYaoti', 'YouYuan', 'LiSu', 'STXingkai', 'STXinwei'
+        ]
+
+        # 尝试系统字体
+        font_found = False
+        for font_name in chinese_fonts:
+            try:
+                self.font = pygame.font.SysFont(font_name, 14)
+                self.big_font = pygame.font.SysFont(font_name, 20, bold=True)
+                print(f"使用字体: {font_name}")
+                font_found = True
+                break
+            except:
+                continue
+
+        # 如果系统字体都不可用，尝试加载字体文件
+        if not font_found:
+            try:
+                # 尝试加载内置字体
+                font_path = pygame.font.match_font('freesansbold')
+                if font_path:
+                    self.font = pygame.font.Font(font_path, 14)
+                    self.big_font = pygame.font.Font(font_path, 20)
+                    print(f"使用内置字体: {font_path}")
+                else:
+                    # 使用默认字体
+                    self.font = pygame.font.Font(None, 14)
+                    self.big_font = pygame.font.Font(None, 20)
+                    print("使用默认字体")
+            except Exception as e:
+                print(f"字体加载失败: {e}")
+                # 最后的备选方案
+                self.font = pygame.font.Font(None, 14)
+                self.big_font = pygame.font.Font(None, 20)
+                print("使用默认字体")
 
     def to_screen_coords(self, x: float, y: float) -> Tuple[int, int]:
         """将环境坐标转换为屏幕坐标"""
@@ -255,6 +302,27 @@ class PygameUrbanSimulator:
 
         # 绘制移动障碍物
         for obstacle in self.env.moving_obstacles:
+            # 检查是否是移动目标
+            if hasattr(obstacle, 'is_target') and obstacle.is_target:
+                # 绘制移动目标
+                self._draw_circle(
+                    obstacle.x,
+                    obstacle.y,
+                    obstacle.width / 2,  # 使用宽度的一半作为半径
+                    getattr(obstacle, 'color', self.COLORS['target']),
+                    filled=True
+                )
+                # 绘制目标标记
+                self._draw_circle(
+                    obstacle.x,
+                    obstacle.y,
+                    obstacle.width / 2 + 1,
+                    self.COLORS['white'],
+                    filled=False,
+                    width=2
+                )
+                continue
+
             if isinstance(obstacle, Pedestrian):
                 # 绘制行人
                 self._draw_rectangle(
@@ -353,12 +421,14 @@ class PygameUrbanSimulator:
         info_texts = [
             f"帧率: {avg_fps:.1f}",
             f"物理时间: {time.time() - self.last_update_time:.1f}秒",
-            f"静态障碍: {len(self.env.obstacles)}",
-            f"移动障碍: {len(self.env.moving_obstacles)}",
+            f"静态障碍物: {len(self.env.obstacles)}",
+            f"移动障碍物: {len(self.env.moving_obstacles)}",
             f"信号灯: {len(self.env.traffic_lights)}",
             f"路径长度: {len(self.path)}",
             f"规划时间: {self.planning_time:.3f}秒",
-            f"遵守红灯: {'是' if self.respect_red_light else '否'}"
+            f"遵守红灯: {'是' if self.respect_red_light else '否'}",
+            f"跟随目标: {'是' if self.follow_target else '否'}",
+            f"自动重规划: {'是' if self.auto_replan else '否'}"
         ]
 
         # 控制提示
@@ -370,13 +440,16 @@ class PygameUrbanSimulator:
             "P键: 显示/隐藏路径",
             "I键: 显示/隐藏信息",
             "L键: 切换遵守红灯",
+            "F键: 切换跟随目标",
+            "A键: 切换自动重规划",
             "S键: 步进模式",
             "鼠标左键: 设置起点",
-            "鼠标右键: 设置终点"
+            "鼠标右键: 设置终点",
+            "中键: 添加移动目标"
         ]
 
         # 绘制背景半透明矩形
-        info_surface = pygame.Surface((250, 180), pygame.SRCALPHA)
+        info_surface = pygame.Surface((250, 200), pygame.SRCALPHA)
         info_surface.fill((0, 0, 0, 128))
         self.screen.blit(info_surface, (10, 10))
 
@@ -386,7 +459,7 @@ class PygameUrbanSimulator:
             self.screen.blit(text_surface, (20, 20 + i * 20))
 
         # 绘制控制提示
-        control_surface = pygame.Surface((200, 240), pygame.SRCALPHA)
+        control_surface = pygame.Surface((200, 280), pygame.SRCALPHA)
         control_surface.fill((0, 0, 0, 128))
         self.screen.blit(control_surface, (self.screen_width - 210, 10))
 
@@ -414,12 +487,28 @@ class PygameUrbanSimulator:
             status_text, True, self.COLORS['yellow'])
         self.screen.blit(status_surface, (self.screen_width // 2 - 60, 10))
 
+        # 显示临时消息
+        if self.message and time.time() - self.message_time < self.message_duration:
+            message_surface = self.big_font.render(
+                self.message, True, self.COLORS['yellow'])
+            self.screen.blit(message_surface, (
+                self.screen_width // 2 - message_surface.get_width() // 2,
+                self.screen_height // 2 - message_surface.get_height() // 2
+            ))
+
     def plan_path(self):
         """使用RRT*规划路径"""
         if not self.start_point or not self.goal_point:
             return
 
+        # 如果跟随移动目标，更新目标点
+        if self.follow_target and self.env.moving_target:
+            self.goal_point = (self.env.moving_target.x,
+                               self.env.moving_target.y)
+
         print(f"开始规划从 {self.start_point} 到 {self.goal_point} 的路径...")
+        self.message = "正在规划路径..."
+        self.message_time = time.time()
 
         # 标记为规划中
         self.planning = True
@@ -450,10 +539,13 @@ class PygameUrbanSimulator:
 
         # 输出结果
         if path:
+            self.message = f"找到路径! 长度: {len(path)}"
             print(f"成功找到路径! 长度: {len(path)}, 耗时: {self.planning_time:.3f}s")
         else:
+            self.message = "未找到路径!"
             print(f"未找到路径! 耗时: {self.planning_time:.3f}s")
 
+        self.message_time = time.time()
         return path
 
     def handle_events(self):
@@ -467,20 +559,44 @@ class PygameUrbanSimulator:
                     self.running = False
                 elif event.key == pygame.K_SPACE:
                     self.pause = not self.pause
+                    self.message = f"仿真{'暂停' if self.pause else '继续'}"
+                    self.message_time = time.time()
                 elif event.key == pygame.K_r:
                     self.replan = True
                 elif event.key == pygame.K_t:
                     self.show_rrt_tree = not self.show_rrt_tree
+                    self.message = f"{'显示' if self.show_rrt_tree else '隐藏'}RRT树"
+                    self.message_time = time.time()
                 elif event.key == pygame.K_p:
                     self.show_path = not self.show_path
+                    self.message = f"{'显示' if self.show_path else '隐藏'}路径"
+                    self.message_time = time.time()
                 elif event.key == pygame.K_i:
                     self.show_info = not self.show_info
+                    self.message = f"{'显示' if self.show_info else '隐藏'}信息面板"
+                    self.message_time = time.time()
                 elif event.key == pygame.K_l:
                     self.respect_red_light = not self.respect_red_light
+                    self.message = f"{'遵守' if self.respect_red_light else '忽略'}红灯"
+                    self.message_time = time.time()
+                elif event.key == pygame.K_f:
+                    self.follow_target = not self.follow_target
+                    self.message = f"{'跟随' if self.follow_target else '不跟随'}移动目标"
+                    self.message_time = time.time()
+                    if self.follow_target and self.env.moving_target:
+                        self.goal_point = (
+                            self.env.moving_target.x, self.env.moving_target.y)
+                        self.replan = True
+                elif event.key == pygame.K_a:
+                    self.auto_replan = not self.auto_replan
+                    self.message = f"{'开启' if self.auto_replan else '关闭'}自动重规划"
+                    self.message_time = time.time()
                 elif event.key == pygame.K_s:
                     self.step_mode = not self.step_mode
                     if self.step_mode:
                         self.pause = True
+                    self.message = f"{'开启' if self.step_mode else '关闭'}步进模式"
+                    self.message_time = time.time()
 
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 # 获取鼠标点击位置并转换为环境坐标
@@ -490,11 +606,38 @@ class PygameUrbanSimulator:
                 if event.button == 1:  # 左键
                     self.start_point = env_pos
                     print(f"设置起点: {env_pos}")
+                    self.message = f"设置起点: ({env_pos[0]:.1f}, {env_pos[1]:.1f})"
+                    self.message_time = time.time()
                     self.replan = True
                 elif event.button == 3:  # 右键
                     self.goal_point = env_pos
                     print(f"设置终点: {env_pos}")
+                    self.message = f"设置终点: ({env_pos[0]:.1f}, {env_pos[1]:.1f})"
+                    self.message_time = time.time()
                     self.replan = True
+                elif event.button == 2:  # 中键
+                    # 添加移动目标
+                    pattern_params = {
+                        'center_x': env_pos[0],
+                        'center_y': env_pos[1],
+                        'radius': 20.0,
+                        'angle': 0.0
+                    }
+                    self.env.add_moving_target(
+                        x=env_pos[0],
+                        y=env_pos[1],
+                        speed=3.0,
+                        pattern=MovementPattern.CIRCULAR,
+                        pattern_params=pattern_params
+                    )
+                    print(f"添加移动目标: {env_pos}")
+                    self.message = f"添加移动目标: ({env_pos[0]:.1f}, {env_pos[1]:.1f})"
+                    self.message_time = time.time()
+
+                    # 如果启用了跟随目标，更新目标点并重新规划
+                    if self.follow_target:
+                        self.goal_point = env_pos
+                        self.replan = True
 
     def run(
         self,
@@ -512,6 +655,7 @@ class PygameUrbanSimulator:
         self.goal_point = goal_point
         self.running = True
         self.last_update_time = time.time()
+        self.last_replan_time = time.time()
 
         # 如果指定了起点和终点，先规划一次路径
         if start_point and goal_point:
@@ -526,6 +670,7 @@ class PygameUrbanSimulator:
             if self.replan:
                 self.plan_path()
                 self.replan = False
+                self.last_replan_time = time.time()
 
             # 更新环境
             current_time = time.time()
@@ -538,6 +683,17 @@ class PygameUrbanSimulator:
                 self.fps_history.append(self.clock.get_fps())
                 if len(self.fps_history) > 30:
                     self.fps_history.pop(0)
+
+                # 如果启用了跟随目标和自动重规划，检查是否需要重新规划
+                if self.follow_target and self.auto_replan and self.env.moving_target:
+                    # 如果目标移动了足够远或者时间间隔足够长，重新规划
+                    if current_time - self.last_replan_time >= self.replan_interval:
+                        target_pos = (self.env.moving_target.x,
+                                      self.env.moving_target.y)
+                        if self.goal_point != target_pos:
+                            self.goal_point = target_pos
+                            self.plan_path()
+                            self.last_replan_time = current_time
 
             # 绘制环境
             self.draw_environment()

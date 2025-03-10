@@ -260,6 +260,36 @@ class Vehicle(MovingObstacle):
         )
 
 
+@dataclass
+class MovingTarget(MovingObstacle):
+    """移动目标 - 用于跟随的目标点"""
+
+    def __init__(
+        self,
+        x: float,
+        y: float,
+        width: float = 2.0,
+        height: float = 2.0,
+        speed: float = 3.0,
+        direction: float = 0.0,
+        pattern: MovementPattern = MovementPattern.CIRCULAR,
+        pattern_params: Dict[str, Any] = None,
+        color: Tuple[int, int, int] = (0, 255, 0)  # 默认绿色
+    ):
+        super().__init__(
+            x=x,
+            y=y,
+            width=width,
+            height=height,
+            speed=speed,
+            direction=direction,
+            pattern=pattern,
+            pattern_params=pattern_params
+        )
+        self.color = color  # 目标颜色
+        self.is_target = True  # 标记为目标
+
+
 class DynamicEnvironment(Environment):
     """动态环境类，扩展了基本环境类，添加动态障碍物支持"""
 
@@ -273,6 +303,7 @@ class DynamicEnvironment(Environment):
         self.moving_obstacles: List[MovingObstacle] = []
         self.traffic_lights: List[TrafficLight] = []
         self.last_update_time = time.time()
+        self.moving_target: Optional[MovingTarget] = None  # 移动目标
 
     def add_pedestrian(
         self,
@@ -366,6 +397,59 @@ class DynamicEnvironment(Environment):
             cycle_time=cycle_time
         )
         self.traffic_lights.append(traffic_light)
+
+    def add_moving_target(
+        self,
+        x: float,
+        y: float,
+        speed: float = 3.0,
+        pattern: MovementPattern = MovementPattern.CIRCULAR,
+        pattern_params: Dict[str, Any] = None,
+        color: Tuple[int, int, int] = (0, 255, 0)
+    ) -> MovingTarget:
+        """
+        添加移动目标
+
+        参数:
+            x: x坐标
+            y: y坐标
+            speed: 移动速度
+            pattern: 移动模式
+            pattern_params: 移动模式参数
+            color: 目标颜色
+
+        返回:
+            创建的移动目标对象
+        """
+        # 如果已有移动目标，先移除
+        if self.moving_target:
+            if self.moving_target in self.moving_obstacles:
+                self.moving_obstacles.remove(self.moving_target)
+            self.moving_target = None
+
+        # 创建新的移动目标
+        target = MovingTarget(
+            x=x,
+            y=y,
+            speed=speed,
+            pattern=pattern,
+            pattern_params=pattern_params,
+            color=color
+        )
+        self.moving_obstacles.append(target)
+        self.moving_target = target
+        return target
+
+    def get_moving_target_position(self) -> Optional[Tuple[float, float]]:
+        """
+        获取移动目标的当前位置
+
+        返回:
+            移动目标的坐标 (x, y)，如果没有移动目标则返回None
+        """
+        if self.moving_target:
+            return (self.moving_target.x, self.moving_target.y)
+        return None
 
     def update(self, dt: Optional[float] = None) -> None:
         """
