@@ -43,7 +43,9 @@ class RRT:
         step_size: float = 1.0,
         max_iterations: int = 1000,
         goal_sample_rate: float = 0.05,
-        search_radius: float = 50.0
+        search_radius: float = 50.0,
+        vehicle_width: float = 1.8,  # 添加车辆宽度参数
+        vehicle_length: float = 4.5  # 添加车辆长度参数
     ):
         """
         初始化RRT路径规划器
@@ -56,6 +58,8 @@ class RRT:
             max_iterations: 最大迭代次数
             goal_sample_rate: 采样目标点的概率
             search_radius: 搜索半径，用于确定搜索范围
+            vehicle_width: 车辆宽度(米)
+            vehicle_length: 车辆长度(米)
         """
         self.start = Node(start[0], start[1])
         self.goal = Node(goal[0], goal[1])
@@ -64,6 +68,8 @@ class RRT:
         self.max_iterations = max_iterations
         self.goal_sample_rate = goal_sample_rate
         self.search_radius = search_radius
+        self.vehicle_width = vehicle_width
+        self.vehicle_length = vehicle_length
 
         # 初始化树
         self.node_list = [self.start]
@@ -192,12 +198,13 @@ class RRT:
         return result
 
     def _check_segment(self, node1: Node, node2: Node) -> bool:
-        """检查两点之间的线段是否无碰撞"""
-        # 实际应调用环境的碰撞检测
-        # 这里简单实现，实际应该根据具体环境实现
+        """检查两点之间的线段是否无碰撞，考虑车辆尺寸"""
+        # 调用环境的碰撞检测，传入车辆尺寸参数
         result = not self.env.check_segment_collision(
             (node1.x, node1.y),
-            (node2.x, node2.y)
+            (node2.x, node2.y),
+            self.vehicle_width,
+            self.vehicle_length
         )
         print(f"线段碰撞检测: {result}")
         return result

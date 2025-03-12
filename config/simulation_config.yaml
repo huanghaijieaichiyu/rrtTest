@@ -1,0 +1,119 @@
+# 仿真环境参数
+environment:
+  width: 200.0  # 环境宽度
+  height: 180.0  # 环境高度
+  margin: 8.0   # 边界margin
+  wall_thickness: 0.5  # 墙壁厚度
+
+# 车辆参数
+vehicle:
+  width: 1.8    # 车辆宽度(m)
+  length: 4.5   # 车辆长度(m)
+  wheelbase: 2.7  # 轴距(m)
+  max_speed: 10.0  # 最大速度(m/s)
+  max_acceleration: 2.0  # 最大加速度(m/s²)
+  max_brake: 4.0  # 最大制动力(m/s²)
+  max_steering_angle: 0.785  # 最大转向角(rad, π/4)
+  initial_heading: 4.712  # 初始朝向(rad, 3π/2，朝下)
+
+# 停车场布局参数
+parking_lot:
+  spot_width: 3.0   # 停车位宽度(m)
+  spot_length: 6.0  # 停车位长度(m)
+  lane_width: 10.0  # 车道宽度(m)
+  total_columns: 4  # 停车位列数
+  spots_per_column: 6  # 每列停车位数
+  static_car_ratio: 0.5  # 静态车辆占用率
+  entrance_width: 12.0  # 入口宽度(m)
+  entrance_margin: 15.0  # 入口外的安全距离(m)
+
+# 路径规划参数
+path_planning:
+  algorithms:
+    rrt:
+      step_size: 2.0
+      max_iterations: 10000
+      goal_sample_rate: 0.05
+      search_radius: 50.0
+    rrt_star:
+      step_size: 2.0
+      max_iterations: 10000
+      rewire_factor: 1.5
+    informed_rrt:
+      step_size: 2.0
+      max_iterations: 10000
+      focus_factor: 1.0
+    timed_rrt:
+      step_size: 2.0
+      max_iterations: 10000
+      robot_speed: 3.0
+    astar:
+      resolution: 0.5
+      diagonal_movement: true
+      weight: 1.0
+    dijkstra:
+      resolution: 1.0
+      diagonal_movement: true
+
+# 路径跟踪控制器参数
+path_following:
+  lookahead_distance: 5.0  # 前瞻距离(m)
+  target_speed: 5.0  # 目标速度(m/s)
+  control_methods:
+    pid:
+      steer:
+        kp: 0.7
+        ki: 0.01
+        kd: 0.1
+      speed:
+        kp: 0.5
+        ki: 0.01
+        kd: 0.05
+    mpc:
+      horizon: 10
+      dt: 0.1
+      weights:
+        x: 1.0
+        y: 2.0
+        heading: 3.0
+        steer: 1.0
+        accel: 0.5
+    lqr:
+      weights:
+        y: 1.0
+        heading: 2.0
+        speed: 0.5
+        steer: 0.1
+        accel: 0.1
+
+# 显示参数
+display:
+  width: 860   # 窗口宽度(像素)
+  height: 640  # 窗口高度(像素)
+  fps: 60      # 帧率
+  font_size: 24  # 字体大小
+  colors:
+    background: [255, 255, 255]  # 白色背景
+    obstacle: [100, 100, 100]    # 灰色障碍物
+    start: [0, 255, 0]          # 绿色起点
+    goal: [255, 0, 0]           # 红色终点
+    path: [0, 0, 255]           # 蓝色路径
+    trajectory: [0, 200, 0]     # 绿色轨迹
+    vehicle:
+      normal: [255, 0, 0]       # 红色车辆
+      collision: [255, 255, 0]   # 黄色碰撞状态
+    text:
+      normal: [0, 0, 0]         # 黑色文本
+      warning: [255, 0, 0]      # 红色警告文本
+      success: [0, 128, 0]      # 绿色成功文本
+      info: [0, 0, 255]         # 蓝色信息文本
+
+# 仿真参数
+simulation:
+  dt: 0.05  # 时间步长(s)
+  speed_multiplier: 2.0  # 仿真速度倍率
+  max_retries: 10  # 路径规划最大重试次数
+  collision_check_steps: 10  # 碰撞检测采样点数
+  position_validation:
+    margin: 5.0  # 位置验证安全边距
+    min_reachable_directions: 3  # 最小可达方向数 

@@ -17,6 +17,7 @@ from matplotlib.patches import Circle, Polygon
 from typing import List, Optional, Tuple, Union
 from shapely.geometry import Point, LineString
 from dataclasses import dataclass
+import math
 
 
 @dataclass
@@ -183,43 +184,136 @@ class Environment:
     def check_segment_collision(
         self,
         start: Tuple[float, float],
-        end: Tuple[float, float]
+        end: Tuple[float, float],
+        vehicle_width: float = 0.0,
+        vehicle_length: float = 0.0
     ) -> bool:
         """
-        检查线段是否与任意障碍物碰撞
+        检查线段是否与任意障碍物碰撞，考虑车辆尺寸
 
         参数:
             start: 线段起点坐标 (x, y)
             end: 线段终点坐标 (x, y)
+            vehicle_width: 车辆宽度，默认为0（点）
+            vehicle_length: 车辆长度，默认为0（点）
 
         返回:
             是否发生碰撞
         """
-        # 创建线段的几何表示
-        line = LineString([start, end])
+        # 如果没有指定车辆尺寸，使用点碰撞检测
+        if vehicle_width == 0 or vehicle_length == 0:
+            # 创建线段的几何表示
+            line = LineString([start, end])
 
-        # 检查是否与任意障碍物碰撞
-        for obstacle in self.obstacles:
-            if isinstance(obstacle, CircleObstacle):
-                # 创建圆形障碍物的几何表示
-                circle = Point(obstacle.x, obstacle.y).buffer(obstacle.radius)
-                if line.intersects(circle):
-                    return True
-            else:
-                # 创建矩形障碍物的几何表示（简化版，不考虑旋转）
-                x_min = obstacle.x - obstacle.width / 2
-                x_max = obstacle.x + obstacle.width / 2
-                y_min = obstacle.y - obstacle.height / 2
-                y_max = obstacle.y + obstacle.height / 2
-                rect = LineString([
-                    (x_min, y_min),
-                    (x_max, y_min),
-                    (x_max, y_max),
-                    (x_min, y_max),
-                    (x_min, y_min)
-                ])
-                if line.intersects(rect):
-                    return True
+            # 检查是否与任意障碍物碰撞
+            for obstacle in self.obstacles:
+                if isinstance(obstacle, CircleObstacle):
+                    # 创建圆形障碍物的几何表示
+                    circle = Point(obstacle.x, obstacle.y).buffer(
+                        obstacle.radius)
+                    if line.intersects(circle):
+                        return True
+                else:
+                    # 创建矩形障碍物的几何表示
+                    x_min = obstacle.x - obstacle.width / 2
+                    x_max = obstacle.x + obstacle.width / 2
+                    y_min = obstacle.y - obstacle.height / 2
+                    y_max = obstacle.y + obstacle.height / 2
+                    rect = Polygon([
+                        (x_min, y_min),
+                        (x_max, y_min),
+                        (x_max, y_max),
+                        (x_min, y_max)
+                    ])
+                    if line.intersects(rect):
+                        return True
+        else:
+            # 考虑车辆尺寸的碰撞检测
+            # 计算路径方向
+            dx = end[0] - start[0]
+            dy = end[1] - start[1]
+            heading = math.atan2(dy, dx)
+
+            # 创建车辆多边形
+            # 在路径的多个点上检查车辆碰撞
+            steps = 5  # 采样点数量
+            for i in range(steps + 1):
+                t = i / steps
+                x = start[0] + t * dx
+                y = start[1] + t * dy
+
+                # 计算车辆四个角的坐标
+                half_length = vehicle_length / 2
+                half_width = vehicle_width / 2
+                cos_h = math.cos(heading)
+                sin_h = math.sin(heading)
+
+                corners = [
+                    (x + half_length * cos_h - half_width * sin_h,
+                     y + half_length * sin_h + half_width * cos_h),
+                    (x + half_length * cos_h + half_width * sin_h,
+                     y + half_length * sin_h - half_width * cos_h),
+                    (x - half_length * cos_h + half_width * sin_h,
+                     y - half_length * sin_h - half_width * cos_h),
+                    (x - half_length * cos_h - half_width * sin_h,
+                     y - half_length * sin_h + half_width * cos_h)
+                ]
+
+                vehicle_polygon = Polygon(corners)
+
+                # 检查是否与任意障碍物碰撞
+                for obstacle in self.obstacles:
+                    if isinstance(obstacle, CircleObstacle):
+                        # 圆形障碍物
+                        circle = Point(obstacle.x, obstacle.y).buffer(
+                            obstacle.radius)
+                        if vehicle_polygon.intersects(circle):
+                            return True
+                    else:
+                        # 矩形障碍物
+                        x_min = obstacle.x - obstacle.width / 2
+                        x_max = obstacle.x + obstacle.width / 2
+                        y_min = obstacle.y - obstacle.height / 2
+                        y_max = obstacle.y + obstacle.height / 2
+
+                        # 考虑障碍物的旋转角度
+                        if hasattr(obstacle, 'angle') and obstacle.angle != 0:
+                            # 创建旋转后的矩形
+                            rect_corners = [
+                                (x_min, y_min),
+                                (x_max, y_min),
+                                (x_max, y_max),
+                                (x_min, y_max)
+                            ]
+
+                            # 旋转矩形的角点
+                            cos_angle = math.cos(-obstacle.angle)
+                            sin_angle = math.sin(-obstacle.angle)
+                            rotated_corners = []
+
+                            for x, y in rect_corners:
+                                # 平移到原点
+                                tx = x - obstacle.x
+                                ty = y - obstacle.y
+                                # 旋转
+                                rx = tx * cos_angle - ty * sin_angle
+                                ry = tx * sin_angle + ty * cos_angle
+                                # 平移回原位置
+                                rotated_corners.append(
+                                    (rx + obstacle.x, ry + obstacle.y))
+
+                            obstacle_polygon = Polygon(rotated_corners)
+                        else:
+                            # 不旋转的矩形
+                            obstacle_polygon = Polygon([
+                                (x_min, y_min),
+                                (x_max, y_min),
+                                (x_max, y_max),
+                                (x_min, y_max)
+                            ])
+
+                        if vehicle_polygon.intersects(obstacle_polygon):
+                            return True
 
         return False
 
