@@ -1,0 +1,82 @@
+# 停车场仿真配置文件
+
+# 窗口设置
+window:
+  width: 860
+  height: 640
+  title: "停车场路径规划仿真器"
+
+# 仿真参数
+simulation:
+  scale: 5  # 像素/米
+  fps: 60   # 帧率
+  dt: 0.05  # 仿真时间步长(秒)
+  lookahead: 5.0  # 路径跟踪前瞻距离
+  speed_multiplier: 2.0  # 仿真速度倍率
+
+# 车辆参数
+vehicle:
+  length: 4.5     # 车辆长度(米)
+  width: 1.8      # 车辆宽度(米)
+  wheelbase: 2.7  # 轴距(米)
+  dynamics:
+    max_speed: 5.0  # 最大速度(m/s)
+    max_accel: 2.0   # 最大加速度(m/s^2)
+    max_brake: 4.0   # 最大制动(m/s^2)
+    max_steer_angle: 0.7854  # 最大转向角(弧度)
+
+# 停车场布局
+parking_lot:
+  geometry:
+    spot_width: 3.0   # 停车位宽度(m)
+    spot_length: 6.0  # 停车位长度(m)
+    lane_width: 10.0  # 车道宽度(m)
+  layout:
+    total_columns: 4  # 停车位列数
+    spots_per_column: 6  # 每列停车位数
+    static_ratio: 0.7  # 静态车辆占用率
+  safety:
+    boundary_margin: 8.0
+    entrance:
+      width: 12.0  # 入口宽度(m)
+      approach_length: 15.0  # 入口引道长度(m)
+
+# 路径规划
+path_planning:
+  default_algorithm: "rrt_star"
+  algorithms:
+    rrt:
+      step_size: 2.0
+      max_iterations: 10000
+    rrt_star:
+      step_size: 2.0
+      max_iterations: 10000
+      rewire_radius: 1.5
+    informed_rrt:
+      step_size: 2.0
+      max_iterations: 10000
+      focus_ratio: 1.0
+
+# 控制参数（新增模块）
+control:
+  default_method: "pid"
+  methods:
+    pid:
+      steer:
+        kp: 3
+        ki: 0.01
+        kd: 2
+      speed:
+        kp: 5
+        ki: 2
+        kd: 0.05
+    mpc:
+      horizon: 10
+      dt: 0.1
+      weights:
+        x: 1.0
+        y: 2.0
+        heading: 3.0
+    lqr:
+      Q: [1.0, 10.0, 10.0]
+      R: [0.1]

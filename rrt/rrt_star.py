@@ -230,7 +230,9 @@ class RRTStar(RRT):
         closest_ind = self._get_nearest_node_index(self.goal)
         closest_node = self.node_list[closest_ind]
 
-        if self._check_segment(closest_node, self.goal):
+        if self._check_segment(
+            closest_node.x, closest_node.y, self.goal.x, self.goal.y
+        ):
             self._connect_to_goal(closest_node)
             return self._extract_path()
 

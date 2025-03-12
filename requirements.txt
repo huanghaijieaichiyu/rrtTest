@@ -2,6 +2,7 @@
 numpy>=1.21.0
 pygame>=2.1.0
 pyyaml>=6.0.0
+shapely>=2.0.0  # 用于几何运算
 
 # 机器学习相关
 torch>=1.10.0
@@ -20,4 +21,4 @@ mypy>=0.950
 
 # 可选依赖
 scikit-learn>=1.0.0  # 用于特征处理和数据分析
-tensorboard>=2.8.0   # 用于训练可视化 
+tensorboard>=2.8.0   # 用于训练可视化

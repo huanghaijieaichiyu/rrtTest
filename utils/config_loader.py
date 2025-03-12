@@ -25,7 +25,7 @@ class ConfigLoader:
         self.config_path = config_path
         self.config = self._load_config()
 
-    def _load_config(self) -> Dict[str, Any]:
+    def _load_config(self):
         """加载配置文件"""
         if not os.path.exists(self.config_path):
             raise FileNotFoundError(f"配置文件不存在: {self.config_path}")
@@ -35,6 +35,14 @@ class ConfigLoader:
                 return yaml.safe_load(f)
             except yaml.YAMLError as e:
                 raise ValueError(f"配置文件格式错误: {e}")
+
+    # 添加对控制参数的深层加载
+    if 'control_methods' in self.config:
+        for method, params in self.config['control_methods'].items():
+            if isinstance(params, dict):
+                self.config['control_methods'][method] = {
+                    k: float(v) for k, v in params.items()
+                }
 
     def get_environment_config(self) -> Dict[str, Any]:
         """获取环境配置"""

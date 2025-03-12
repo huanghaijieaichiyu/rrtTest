@@ -15,7 +15,7 @@ import matplotlib
 import numpy as np
 import pygame
 import yaml
-from typing import List, Tuple, Dict, Optional, Any
+from typing import List, Tuple, Dict, Optional, Union, Any
 
 from .environment import Environment
 
@@ -708,15 +708,15 @@ class PathFollower:
 class PygameSimulator:
     """基于Pygame的车辆仿真器"""
 
-    def __init__(self, config_path: Optional[str] = None):
+    def __init__(self, config_input: Optional[Union[str, Dict]] = None):
         """
         初始化仿真器
 
         参数:
-            config_path: 配置文件路径
+            config_input: 配置文件路径(str)或配置字典(Dict)
         """
         # 加载配置
-        self.config = self._load_config(config_path)
+        self.config = self._load_config(config_input)
 
         # 初始化pygame
         pygame.init()
@@ -728,15 +728,27 @@ class PygameSimulator:
 
         # 创建窗口
         self.screen = pygame.display.set_mode((self.width, self.height))
-        pygame.display.set_caption(self.config.get(
-            'window_title', 'RRT-Pygame 仿真器'))
+        pygame.display.set_caption(self.config.get('window_title', 'RRT-Pygame 仿真器'))
 
         # 创建时钟对象
         self.clock = pygame.time.Clock()
 
+        # 获取车辆配置
+        vehicle_config = self.config.get('vehicle', {})
+        
         # 初始化车辆和环境
         self.environment = None
-        self.vehicle = VehicleModel()
+        self.vehicle = VehicleModel(
+            length=vehicle_config.get('length', 4.5),
+            width=vehicle_config.get('width', 1.8)
+        )
+        # 更新车辆参数
+        self.vehicle.wheelbase = vehicle_config.get('wheelbase', 2.7)
+        self.vehicle.max_speed = vehicle_config.get('max_speed', 5.0)
+        self.vehicle.max_accel = vehicle_config.get('max_accel', 2.0)
+        self.vehicle.max_brake = vehicle_config.get('max_brake', 4.0)
+        self.vehicle.max_steer = vehicle_config.get('max_steer', 0.7854)
+
         self.follower = PathFollower(
             lookahead=self.config.get('lookahead', 5.0),
             control_method=self.config.get('control_method', 'default')
@@ -769,8 +781,8 @@ class PygameSimulator:
         self.message_time = 0
         self.message_duration = 3  # 消息显示时间（秒）
 
-    def _load_config(self, config_path: Optional[str]) -> Dict:
-        """加载配置文件"""
+    def _load_config(self, config_input: Optional[Union[str, Dict]]) -> Dict:
+        """加载配置文件或配置字典"""
         default_config = {
             'scale': 5,
             'window_width': 1000,
@@ -791,14 +803,17 @@ class PygameSimulator:
             }
         }
 
-        if config_path and os.path.exists(config_path):
+        if isinstance(config_input, str) and os.path.exists(config_input):
             try:
-                with open(config_path, 'r', encoding='utf-8') as f:
+                with open(config_input, 'r', encoding='utf-8') as f:
                     user_config = yaml.safe_load(f)
                     # 更新默认配置
                     self._update_config(default_config, user_config)
             except Exception as e:
                 print(f"加载配置文件失败: {e}")
+        elif isinstance(config_input, dict):
+            # 直接使用配置字典更新默认配置
+            self._update_config(default_config, config_input)
 
         return default_config
 
@@ -832,19 +847,81 @@ class PygameSimulator:
         corners = self.vehicle.get_corners()
         screen_corners = [self.world_to_screen(x, y) for x, y in corners]
 
-        # 绘制车身
-        pygame.draw.polygon(self.screen, RED, screen_corners)
-
-        # 绘制车头方向
-        head_x = self.vehicle.x + \
-            math.cos(self.vehicle.heading) * self.vehicle.length * 0.5
-        head_y = self.vehicle.y + \
-            math.sin(self.vehicle.heading) * self.vehicle.length * 0.5
-
+        # 计算车身中心点
         center_screen = self.world_to_screen(self.vehicle.x, self.vehicle.y)
-        head_screen = self.world_to_screen(head_x, head_y)
 
-        pygame.draw.line(self.screen, BLUE, center_screen, head_screen, 2)
+        # 绘制车身主体（带阴影效果）
+        shadow_offset = 2
+        shadow_corners = [(x + shadow_offset, y + shadow_offset) for x, y in screen_corners]
+        pygame.draw.polygon(self.screen, (100, 100, 100), shadow_corners)  # 阴影
+        pygame.draw.polygon(self.screen, (200, 0, 0), screen_corners)  # 车身
+        pygame.draw.polygon(self.screen, (150, 0, 0), screen_corners, 2)  # 车身轮廓
+
+        # 计算车轮位置（四个车轮）
+        wheel_width = self.vehicle.width * 0.2 * self.scale
+        wheel_length = self.vehicle.length * 0.15 * self.scale
+        cos_h = math.cos(self.vehicle.heading)
+        sin_h = math.sin(self.vehicle.heading)
+
+        # 车轮相对于车身中心的偏移
+        wheel_offsets = [
+            (-self.vehicle.length * 0.35, -self.vehicle.width * 0.45),  # 左前
+            (-self.vehicle.length * 0.35, self.vehicle.width * 0.45),   # 右前
+            (self.vehicle.length * 0.35, -self.vehicle.width * 0.45),   # 左后
+            (self.vehicle.length * 0.35, self.vehicle.width * 0.45)     # 右后
+        ]
+
+        # 绘制车轮（带转向效果）
+        for i, (dx, dy) in enumerate(wheel_offsets):
+            # 计算车轮在世界坐标系中的位置
+            wheel_x = self.vehicle.x + dx * cos_h - dy * sin_h
+            wheel_y = self.vehicle.y + dx * sin_h + dy * cos_h
+            wheel_screen = self.world_to_screen(wheel_x, wheel_y)
+
+            # 计算车轮的旋转角度（前轮跟随转向角）
+            wheel_angle = self.vehicle.heading
+            if i < 2:  # 前轮
+                wheel_angle += self.vehicle.steer_angle
+
+            # 计算车轮的四个角点
+            wheel_corners = [
+                (wheel_screen[0] - wheel_length/2 * math.cos(wheel_angle) + wheel_width/2 * math.sin(wheel_angle),
+                 wheel_screen[1] - wheel_length/2 * math.sin(wheel_angle) - wheel_width/2 * math.cos(wheel_angle)),
+                (wheel_screen[0] + wheel_length/2 * math.cos(wheel_angle) + wheel_width/2 * math.sin(wheel_angle),
+                 wheel_screen[1] + wheel_length/2 * math.sin(wheel_angle) - wheel_width/2 * math.cos(wheel_angle)),
+                (wheel_screen[0] + wheel_length/2 * math.cos(wheel_angle) - wheel_width/2 * math.sin(wheel_angle),
+                 wheel_screen[1] + wheel_length/2 * math.sin(wheel_angle) + wheel_width/2 * math.cos(wheel_angle)),
+                (wheel_screen[0] - wheel_length/2 * math.cos(wheel_angle) - wheel_width/2 * math.sin(wheel_angle),
+                 wheel_screen[1] - wheel_length/2 * math.sin(wheel_angle) + wheel_width/2 * math.cos(wheel_angle))
+            ]
+            pygame.draw.polygon(self.screen, (40, 40, 40), wheel_corners)  # 车轮
+            pygame.draw.polygon(self.screen, (20, 20, 20), wheel_corners, 2)  # 车轮轮廓
+
+        # 绘制车窗
+        window_points = [
+            (self.vehicle.x - self.vehicle.length * 0.2, self.vehicle.y - self.vehicle.width * 0.3),
+            (self.vehicle.x - self.vehicle.length * 0.2, self.vehicle.y + self.vehicle.width * 0.3),
+            (self.vehicle.x - self.vehicle.length * 0.35, self.vehicle.y + self.vehicle.width * 0.35),
+            (self.vehicle.x - self.vehicle.length * 0.35, self.vehicle.y - self.vehicle.width * 0.35)
+        ]
+        window_screen = [self.world_to_screen(x, y) for x, y in window_points]
+        pygame.draw.polygon(self.screen, (150, 200, 255), window_screen)  # 车窗
+        pygame.draw.polygon(self.screen, (100, 150, 200), window_screen, 2)  # 车窗边框
+
+        # 绘制车头灯
+        headlight_radius = int(self.vehicle.width * 0.1 * self.scale)
+        left_headlight = self.world_to_screen(
+            self.vehicle.x - self.vehicle.length * 0.45,
+            self.vehicle.y - self.vehicle.width * 0.25
+        )
+        right_headlight = self.world_to_screen(
+            self.vehicle.x - self.vehicle.length * 0.45,
+            self.vehicle.y + self.vehicle.width * 0.25
+        )
+        pygame.draw.circle(self.screen, (255, 255, 200), left_headlight, headlight_radius)
+        pygame.draw.circle(self.screen, (255, 255, 200), right_headlight, headlight_radius)
+        pygame.draw.circle(self.screen, (200, 200, 150), left_headlight, headlight_radius, 2)
+        pygame.draw.circle(self.screen, (200, 200, 150), right_headlight, headlight_radius, 2)
 
     def _draw_environment(self) -> None:
         """绘制环境"""

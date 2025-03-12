@@ -13,9 +13,9 @@
 
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.patches import Circle, Polygon
+from matplotlib.patches import Circle as MplCircle
 from typing import List, Optional, Tuple, Union
-from shapely.geometry import Point, LineString
+from shapely.geometry import Point, LineString, Polygon
 from dataclasses import dataclass
 import math
 
