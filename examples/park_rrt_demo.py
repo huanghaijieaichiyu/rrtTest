@@ -1,808 +1,39 @@
 import numpy as np
 import random
 import argparse
-import os
 import yaml
 from typing import List, Tuple, Dict, Any, Optional
 from rrt.astar import AStar
 from simulation.environment import Environment
-from rrt.rrt_base import RRT, Node
-from rrt.rrt_star import RRTStar
+from rrt.rrt_base import RRT
+from rrt.rrt_star import RRTStar, TimedRRTStar
 from rrt.informed_rrt import InformedRRTStar
 from rrt.dijkstra import Dijkstra
-from simulation.pygame_simulator import PygameSimulator
+from rrt.dstar_lite import DStarLite
+from rrt.theta_star import ThetaStar
+from simulation.pygame_simulator import ParkingEnvironment, PathFollower, PygameSimulator, VehicleModel
+from simulation.pygame_simulator import check_vehicle_collision, check_path_collision
 import math
-from shapely.geometry import Point, Polygon
+import pygame
+
 
 # 加载配置文件
 
 
-def load_config(config_path: Optional[str] = None) -> Dict:
-    """加载配置文件"""
-    # 默认配置
-    default_config = {
-        # 窗口设置
-        'window_width': 860,
-        'window_height': 640,
-        'window_title': "停车场路径规划仿真器",
-
-        # 仿真参数
-        'scale': 5,  # 像素/米
-        'fps': 60,   # 帧率
-        'dt': 0.05,  # 仿真时间步长(秒)
-        'lookahead': 5.0,  # 路径跟踪前瞻距离
-        'simulation_speed': 2.0,  # 仿真速度倍率
-
-        # 车辆参数
-        'vehicle': {
-            'length': 4.5,     # 车辆长度(米)
-            'width': 1.8,      # 车辆宽度(米)
-            'wheelbase': 2.7,  # 轴距(米)
-            'max_speed': 5.0,  # 最大速度(m/s)
-            'max_accel': 2.0,   # 最大加速度(m/s^2)
-            'max_brake': 4.0,   # 最大制动(m/s^2)
-            'max_steer': 0.7854  # 最大转向角(弧度), 约45度
-        },
-
-        # 停车场布局参数
-        'parking_lot': {
-            'spot_width': 3.0,   # 停车位宽度(m)
-            'spot_length': 6.0,  # 停车位长度(m)
-            'lane_width': 10.0,  # 车道宽度(m)
-            'total_columns': 4,  # 停车位列数
-            'spots_per_column': 6,  # 每列停车位数
-            'static_car_ratio': 0.7,  # 静态车辆占用率
-            'margin': 8.0,  # 边界margin
-            'wall_thickness': 0.5,  # 墙壁厚度
-            'entrance_width': 12.0,  # 入口宽度(m)
-            'entrance_margin': 15.0  # 入口外的安全距离(m)
-        },
-
-        # 路径规划参数
-        'path_planning': {
-            'algorithms': {
-                'rrt': {
-                    'step_size': 2.0,
-                    'max_iterations': 10000
-                },
-                'rrt_star': {
-                    'step_size': 2.0,
-                    'max_iterations': 10000,
-                    'rewire_factor': 1.5
-                },
-                'informed_rrt': {
-                    'step_size': 2.0,
-                    'max_iterations': 10000,
-                    'focus_factor': 1.0
-                },
-                'timed_rrt': {
-                    'step_size': 2.0,
-                    'max_iterations': 10000,
-                    'robot_speed': 3.0
-                },
-                'astar': {
-                    'resolution': 0.5,
-                    'diagonal_movement': True,
-                    'weight': 1.0
-                },
-                'dijkstra': {
-                    'resolution': 1.0,
-                    'diagonal_movement': True
-                }
-            }
-        }
-    }
-
-    # 如果提供了配置文件路径，尝试加载配置
-    if config_path and os.path.exists(config_path):
-        try:
-            with open(config_path, 'r', encoding='utf-8') as f:
-                user_config = yaml.safe_load(f)
-                # 递归更新默认配置
-                update_config(default_config, user_config)
-            print(f"成功加载配置文件: {config_path}")
-        except Exception as e:
-            print(f"加载配置文件失败: {e}")
-    else:
-        if config_path:
-            print(f"配置文件不存在: {config_path}，使用默认配置")
-        else:
-            print("未指定配置文件，使用默认配置")
-
-    return default_config
-
-# 递归更新配置字典
-
-
-def update_config(default_config: Dict, user_config: Dict) -> None:
-    """递归更新配置字典"""
-    for key, value in user_config.items():
-        if isinstance(value, dict) and key in default_config and isinstance(default_config[key], dict):
-            update_config(default_config[key], value)
-        else:
-            default_config[key] = value
-
-# 定义动态障碍物类
-
-
-class DynamicObstacle:
-    def __init__(self, x0, y0, vx, vy, width, height):
-        """初始化动态障碍物
-        参数:
-            x0, y0: 初始位置
-            vx, vy: 速度分量
-            width, height: 宽度和高度
-        """
-        self.x0 = x0
-        self.y0 = y0
-        self.vx = vx
-        self.vy = vy
-        self.width = width
-        self.height = height
-
-    def get_position_at_time(self, t):
-        """计算在时间t时的位置"""
-        x = self.x0 + self.vx * t
-        y = self.y0 + self.vy * t
-        return x, y
-
-# 修改Environment类以支持停车场场景
-
-
-class ParkingEnvironment(Environment):
-    def __init__(self, width, height):
-        """初始化停车场环境"""
-        super().__init__(width, height)
-        self.dynamic_obstacles = []
-        self.vehicle_width = 1.8  # 车辆宽度
-
-    def add_obstacle(
-        self,
-        x,
-        y,
-        obstacle_type="rectangle",
-        width=1.0,
-        height=1.0,
-        radius=0.5,
-        angle=0.0,
-        color=(100, 100, 100, 200),  # 默认颜色：灰色半透明
-        is_parking_spot=False,  # 新增停车位标识
-        occupied=False          # 新增占用状态
-    ):
-        """添加障碍物，支持颜色属性和停车位状态"""
-        # 根据占用状态设置颜色
-        if is_parking_spot:
-            color = (255, 255, 0, 200) if occupied else (255, 255, 255, 200)
-
-        # 创建一个新的障碍物对象
-        obstacle = type('Obstacle', (), {
-            'x': x,
-            'y': y,
-            'type': obstacle_type,
-            'width': width,
-            'height': height,
-            'radius': radius,
-            'angle': angle,
-            'color': color,
-            'is_parking_spot': is_parking_spot,
-            'occupied': occupied
-        })
-
-        # 添加安全边界（蓝色半透明）
-        safety_margin = 0.4 * self.vehicle_width  # 扩大安全边界
-        if is_parking_spot:
-            # 生成停车位扩展区域
-            expansion_factor = 1.3  # 区域扩展系数
-            safety_obstacle = type('Obstacle', (), {
-                'x': x,
-                'y': y,
-                'type': obstacle_type,
-                'width': width * expansion_factor,
-                'height': height * expansion_factor,
-                'radius': radius * expansion_factor,
-                'angle': angle,
-                'color': (255, 255, 0, 40) if occupied else (200, 200, 200, 40)
-            })
-        else:
-            if obstacle_type == "rectangle":
-                safety_obstacle = type('Obstacle', (), {
-                    'x': x,
-                    'y': y,
-                    'type': obstacle_type,
-                    'width': width + 2 * safety_margin,
-                    'height': height + 2 * safety_margin,
-                    'radius': radius,
-                    'angle': angle,
-                    'color': (0, 0, 255, 40)
-                })
-            else:  # circle
-                safety_obstacle = type('Obstacle', (), {
-                    'x': x,
-                    'y': y,
-                    'type': obstacle_type,
-                    'width': width,
-                    'height': height,
-                    'radius': radius + safety_margin,
-                    'angle': angle,
-                    'color': (0, 0, 255, 40)
-                })
-
-        # 先添加安全边界
-        self.obstacles.append(safety_obstacle)
-
-        # 再添加实际障碍物
-        self.obstacles.append(obstacle)
-        return obstacle
-
-    def add_dynamic_obstacle(self, x0, y0, vx, vy, width, height):
-        """添加动态障碍物"""
-        self.dynamic_obstacles.append(
-            DynamicObstacle(x0, y0, vx, vy, width, height))
-
-    def check_segment_collision_with_time(self, start, end, start_time, end_time):
-        """检查路径段在时间区间内是否发生碰撞"""
-        # 检查静态障碍物
-        if super().check_segment_collision(start, end):
-            return True
-
-        # 检查动态障碍物
-        for dyn_obs in self.dynamic_obstacles:
-            for t in np.arange(start_time, end_time, 0.1):
-                robot_pos = interpolate_position(
-                    start, end, start_time, end_time, t)
-                obs_pos = dyn_obs.get_position_at_time(t)
-                if check_collision(robot_pos, obs_pos, dyn_obs.width, dyn_obs.height):
-                    return True
-        return False
-
-
-def interpolate_position(start, end, start_time, end_time, t):
-    """插值计算机器人当前位置"""
-    ratio = (t - start_time) / (end_time - start_time)
-    x = start[0] + ratio * (end[0] - start[0])
-    y = start[1] + ratio * (end[1] - start[1])
-    return x, y
-
-
-def check_collision(robot_pos, obs_pos, obs_width, obs_height):
-    """简化的碰撞检测：使用圆形近似"""
-    robot_radius = 2.5  # 假设机器人为圆形，半径为2.5
-    obs_radius = np.hypot(obs_width / 2, obs_height / 2)
-    dist = np.hypot(robot_pos[0] - obs_pos[0], robot_pos[1] - obs_pos[1])
-    return dist < (robot_radius + obs_radius)
-
-# 修改RRTStar以支持时间维度
-
-
-class TimedRRTStar(RRTStar):
-    def __init__(
-        self,
-        start,
-        goal,
-        env,
-        max_iterations,
-        step_size,
-        robot_speed=1.0
-    ):
-        """初始化时间维度的RRT*规划器"""
-        super().__init__(start, goal, env, step_size, max_iterations)
-        self.robot_speed = robot_speed
-        self.node_list = [self.start]  # Initialize node list with start node
-
-    def _random_node(self) -> Node:
-        """生成随机节点"""
-        if np.random.random() < self.goal_sample_rate:
-            return Node(self.goal.x, self.goal.y)
-        return Node(
-            np.random.uniform(self.min_x, self.max_x),
-            np.random.uniform(self.min_y, self.max_y)
-        )
-
-    def _steer(self, from_node: Node, to_node: Node) -> Node:
-        """从一个节点朝向另一个节点扩展"""
-        dist = np.hypot(to_node.x - from_node.x, to_node.y - from_node.y)
-        if dist > self.step_size:
-            theta = np.arctan2(to_node.y - from_node.y,
-                               to_node.x - from_node.x)
-            new_x = from_node.x + self.step_size * np.cos(theta)
-            new_y = from_node.y + self.step_size * np.sin(theta)
-            new_node = Node(new_x, new_y)
-        else:
-            new_node = Node(to_node.x, to_node.y)
-
-        new_node.parent = from_node
-        new_node.cost = from_node.cost + dist
-        new_node.path_x = from_node.path_x.copy()
-        new_node.path_y = from_node.path_y.copy()
-        new_node.path_x.append(new_node.x)
-        new_node.path_y.append(new_node.y)
-        return new_node
-
-    def plan(self) -> List[Tuple[float, float]]:
-        """规划路径，考虑时间维度"""
-        for _ in range(self.max_iterations):
-            # 随机采样
-            rnd = self._random_node()
-
-            # 找到最近的节点
-            nearest_ind = self._get_nearest_node_index(rnd)
-            nearest_node = self.node_list[nearest_ind]
-
-            # 扩展树
-            new_node = self._steer(nearest_node, rnd)
-
-            # 计算时间增量
-            dist = np.hypot(new_node.x - nearest_node.x,
-                            new_node.y - nearest_node.y)
-            time_increment = dist / self.robot_speed
-
-            # 检查时间维度的碰撞
-            if not self.env.check_segment_collision_with_time(
-                (nearest_node.x, nearest_node.y),
-                (new_node.x, new_node.y),
-                nearest_node.cost,  # 使用cost作为时间
-                nearest_node.cost + time_increment
-            ):
-                # 找到附近的节点
-                near_nodes = self._find_near_nodes(new_node)
-                # 选择最优父节点
-                new_node = self._choose_parent(new_node, near_nodes)
-
-                if new_node.parent is not None:
-                    # 添加新节点
-                    self.node_list.append(new_node)
-                    # 尝试重新连接
-                    self._rewire(new_node, near_nodes)
-
-                    # 检查是否到达目标
-                    if self._is_near_goal(new_node):
-                        if self._check_segment(new_node, self.goal):
-                            self._connect_to_goal(new_node)
-                            return self._extract_path()
-
-        return []
-
-# 创建停车场场景
-
-
-def create_default_scene(width, height, config):
-    """创建默认停车场场景"""
-    env = ParkingEnvironment(width, height)
-
-    # 从配置中获取参数
-    margin = config['parking_lot']['margin']
-    car_width = config['vehicle']['width']
-    car_length = config['vehicle']['length']
-    spot_width = config['parking_lot']['spot_width']
-    spot_length = config['parking_lot']['spot_length']
-    lane_width = config['parking_lot']['lane_width']
-    wall_thickness = config['parking_lot']['wall_thickness']
-
-    # 添加基本边界
-    # 左右边界---预留入口
-    env.add_obstacle(
-        x=margin/2 - 20, y=height/2,
-        obstacle_type="rectangle",
-        width=wall_thickness, height=height
-    )
-    env.add_obstacle(
-        x=width-margin/2 - 20, y=height/2,
-        obstacle_type="rectangle",
-        width=wall_thickness, height=height
-    )
-
-    # 从配置中获取停车场布局参数
-    total_columns = config['parking_lot']['total_columns']
-    spots_per_column = config['parking_lot']['spots_per_column']
-    static_car_ratio = config['parking_lot']['static_car_ratio']
-
-    # 记录车道中心线，用于后续添加装饰物
-    lane_centers = []
-
-    parking_spots = []
-    parking_orientations = []
-    for col in range(total_columns):
-        is_left_oriented = col % 2 == 0
-        base_x = margin + (col // 2) * (2 * spot_length + lane_width)
-
-        # 记录车道中心线
-        if col % 2 == 1:
-            lane_center_x = base_x + spot_length + lane_width/2
-            lane_centers.append(lane_center_x)
-
-        if is_left_oriented:
-            x = base_x + spot_length / 2
-            orientation = 0  # 车头朝右
-        else:
-            x = base_x + spot_length * 1.5 + lane_width
-            orientation = np.pi  # 车头朝左
-
-        # 在每列中留出更多间隔
-        for i in range(spots_per_column):
-            y = margin + spot_width * (i + 0.5) + i * 1.0  # 增加停车位之间的间隔
-            parking_spots.append((x, y))
-            parking_orientations.append(orientation)
-
-    # 添加静态车辆
-    num_static_cars = int(len(parking_spots) * static_car_ratio)
-    static_indices = random.sample(range(len(parking_spots)), num_static_cars)
-    static_spots = []
-    static_orientations = []
-
-    for idx in static_indices:
-        spot = parking_spots[idx]
-        orientation = parking_orientations[idx]
-        static_spots.append(spot)
-        static_orientations.append(orientation)
-
-    # 添加静态车辆，确保车辆在停车位内居中
-    for spot, orientation in zip(static_spots, static_orientations):
-        env.add_obstacle(
-            x=spot[0],
-            y=spot[1],
-            obstacle_type="rectangle",
-            width=car_length,
-            height=car_width,
-            angle=orientation
-        )
-
-    return env, static_spots, parking_spots
-
-
-def create_parking_scenario(use_random_scene=False, config=None):
-    """创建停车场仿真场景
-
-    参数:
-        use_random_scene: 是否使用随机生成场景，默认False使用默认场景
-        config: 配置字典，默认为None时会加载默认配置
-    """
-    # 如果没有提供配置，使用默认配置
-    if config is None:
-        config = load_config()
-
-    # 从配置中获取参数
-    car_width = config['vehicle']['width']
-    car_length = config['vehicle']['length']
-    spot_width = config['parking_lot']['spot_width']
-    spot_length = config['parking_lot']['spot_length']
-    lane_width = config['parking_lot']['lane_width']
-    margin = config['parking_lot']['margin']
-    entrance_width = config['parking_lot']['entrance_width']
-    entrance_margin = config['parking_lot']['entrance_margin']
-
-    # 从配置中获取停车场布局参数
-    total_columns = config['parking_lot']['total_columns']
-    spots_per_column = config['parking_lot']['spots_per_column']
-
-    # 计算停车场总尺寸
-    width = (spot_length * 2 + lane_width) * \
-        (total_columns // 2) + margin * 2
-    height = (spot_width * spots_per_column + margin * 2)
-
-    # 如果不使用随机场景，直接返回默认场景
-    if not use_random_scene:
-        print("\n使用默认停车场场景")
-        env, static_spots, parking_spots = create_default_scene(
-            width, height, config
-        )
-
-        # 添加上下边界墙
-        wall_thickness = 0.5
-        env.add_obstacle(
-            x=width/2,
-            y=margin/2,
-            obstacle_type="rectangle",
-            width=width-margin,
-            height=wall_thickness
-        )
-        env.add_obstacle(
-            x=width/2,
-            y=height-margin/2,
-            obstacle_type="rectangle",
-            width=width-margin,
-            height=wall_thickness
-        )
-
-        # 设置默认起点（从下原点进入）
-        start = (0, height/2)
-
-        # 从未占用的停车位中选择目标
-        available_spots = [
-            spot for spot in parking_spots if spot not in static_spots]
-
-        if not available_spots:
-            raise ValueError("默认场景中没有可用的停车位")
-
-        goal = random.choice(available_spots)
-        goal_orientation = 0.0  # 默认朝向
-
-        return env, start, goal, goal_orientation
-    else:
-        # 随机场景生成逻辑（包含验证）
-        print("\n尝试生成随机停车场场景")
-
-        # 设置入口和出口位置
-        entrance_pos = width * 0.2
-        exit_pos = width * 0.8
-
-        # 设置起点在入口外的空旷区域
-        if random.random() < 0.5:
-            start = (entrance_pos + entrance_width/2, -entrance_margin)
-        else:
-            start = (exit_pos + entrance_width/2, height + entrance_margin)
-
-        # 多次尝试生成有效场景
-        max_attempts = 10
-        for attempt in range(max_attempts):
-            print(f"\n尝试生成场景 #{attempt + 1}")
-
-            # 创建环境
-            env = ParkingEnvironment(width, height)
-
-            # 添加边界墙
-            wall_thickness = 0.5
-            # 左右边界
-            env.add_obstacle(
-                x=margin/2 - 10,
-                y=height/2,
-                obstacle_type="rectangle",
-                width=wall_thickness,
-                height=height
-            )
-            env.add_obstacle(
-                x=width-margin/2 - 10,
-                y=height/2,
-                obstacle_type="rectangle",
-                width=wall_thickness,
-                height=height
-            )
-
-            # 上边界（分段）
-            env.add_obstacle(
-                x=(entrance_pos-margin)/2,
-                y=margin/2,
-                obstacle_type="rectangle",
-                width=entrance_pos-margin,
-                height=wall_thickness
-            )
-
-            middle_section_width = exit_pos - entrance_pos - entrance_width
-            env.add_obstacle(
-                x=(entrance_pos+entrance_width+exit_pos)/2,
-                y=margin/2,
-                obstacle_type="rectangle",
-                width=middle_section_width,
-                height=wall_thickness
-            )
-
-            end_section_width = width - exit_pos - entrance_width
-            env.add_obstacle(
-                x=(width+exit_pos+entrance_width)/2,
-                y=margin/2,
-                obstacle_type="rectangle",
-                width=end_section_width,
-                height=wall_thickness
-            )
-
-            # 下边界（分段）
-            env.add_obstacle(
-                x=(entrance_pos-margin)/2,
-                y=height-margin/2,
-                obstacle_type="rectangle",
-                width=entrance_pos-margin,
-                height=wall_thickness
-            )
-
-            env.add_obstacle(
-                x=(entrance_pos+entrance_width+exit_pos)/2,
-                y=height-margin/2,
-                obstacle_type="rectangle",
-                width=middle_section_width,
-                height=wall_thickness
-            )
-
-            env.add_obstacle(
-                x=(width+exit_pos+entrance_width)/2,
-                y=height-margin/2,
-                obstacle_type="rectangle",
-                width=end_section_width,
-                height=wall_thickness
-            )
-
-            # 生成停车位布局
-            parking_spots = []
-            parking_orientations = []
-            valid_parking_areas = []  # 记录有效的停车区域
-
-            # 创建停车位和有效停车区域
-            for col in range(total_columns):
-                is_left_oriented = col % 2 == 0
-                base_x = margin + (col // 2) * (2 * spot_length + lane_width)
-
-                if is_left_oriented:
-                    x = base_x + spot_length / 2
-                    orientation = 0  # 车头朝右
-                    area_x = base_x
-                else:
-                    x = base_x + spot_length * 1.5 + lane_width
-                    orientation = np.pi  # 车头朝左
-                    area_x = base_x + spot_length + lane_width
-
-                # 记录这一列的停车区域
-                valid_parking_areas.append({
-                    'x': area_x,
-                    'width': spot_length,
-                    'y_start': margin,
-                    'y_end': margin + spot_width * spots_per_column
-                })
-
-                for i in range(spots_per_column):
-                    y = margin + spot_width * (i + 0.5)
-                    # 确保车辆完全在停车位内
-                    adjusted_x = x
-                    adjusted_y = y
-                    parking_spots.append((adjusted_x, adjusted_y))
-                    parking_orientations.append(orientation)
-
-            # 随机选择停车位作为静态车辆（占用率70%）
-            num_static_cars = int(len(parking_spots) * 0.7)
-            static_indices = random.sample(
-                range(len(parking_spots)), num_static_cars)
-            static_spots = []
-            static_orientations = []
-
-            # 只在合法停车位内生成静态车辆
-            for idx in static_indices:
-                spot = parking_spots[idx]
-                orientation = parking_orientations[idx]
-
-                # 验证车辆是否在有效停车区域内
-                is_valid = False
-                for area in valid_parking_areas:
-                    area_right = area['x'] + area['width']
-                    x_valid = area['x'] <= spot[0]
-                    x_in_area = x_valid and spot[0] <= area_right
-                    y_valid = area['y_start'] <= spot[1]
-                    y_in_area = y_valid and spot[1] <= area['y_end']
-                    if x_in_area and y_in_area:
-                        is_valid = True
-                        break
-
-                if is_valid:
-                    static_spots.append(spot)
-                    static_orientations.append(orientation)
-
-            # 添加静态车辆（确保在停车位内）
-            for spot, orientation in zip(static_spots, static_orientations):
-                env.add_obstacle(
-                    x=spot[0],
-                    y=spot[1],
-                    obstacle_type="rectangle",
-                    width=car_length,
-                    height=car_width,
-                    angle=orientation  # 添加车辆朝向
-                )
-
-            # 验证起点位置
-            if not check_position_valid(env, start,  car_width, car_length, margin=5.0):
-                print("起点位置无效，重新生成场景...")
-                continue
-
-            # 选择可用的停车位（必须验证可达性）
-            available_spots = []
-            available_orientations = []
-            for i, spot in enumerate(parking_spots):
-                if (spot not in static_spots and
-                        check_position_valid(env, spot, car_width, car_length, margin=3.0)):
-                    available_spots.append(spot)
-                    available_orientations.append(parking_orientations[i])
-
-            if not available_spots:
-                print("没有可用的停车位，重新生成场景...")
-                continue
-
-            # 随机选择目标停车位
-            goal_index = random.randrange(len(available_spots))
-            goal = available_spots[goal_index]
-            goal_orientation = available_orientations[goal_index]
-
-            # 验证路径可行性
-            args = argparse.Namespace(
-                algorithm='rrt_star',
-                iterations=5000,
-                step_size=2.0,
-                robot_speed=3.0
-            )
-            if check_path_feasibility(env, start, goal, 'rrt_star', args, car_width, car_length):
-                print(f"成功生成有效的随机停车场场景（尝试次数：{attempt + 1}）")
-                return env, start, goal, goal_orientation
-
-            print("路径规划测试失败，重新生成场景...")
-
-        # 如果随机生成失败，返回默认场景
-        print("\n随机场景生成失败，使用默认停车场场景")
-        return create_parking_scenario(use_random_scene=False)
-
-
-def get_algorithm_specific_params(algorithm: str, args, ) -> Dict[str, Any]:
-    """获取算法特定的参数"""
-    base_params = {
-        'max_iterations': args.iterations if args.iterations is not None else 10000,
-        'step_size': args.step_size if args.step_size is not None else 2.0
-    }
-
-    params = {
-        'astar': {'resolution': 0.5, 'diagonal_movement': True, 'weight': 1.0},
-        'rrt': base_params,
-        'rrt_star': {**base_params, 'rewire_factor': 1.5},
-        'informed_rrt': {**base_params, 'focus_factor': 1.0},
-        'timed_rrt': {**base_params, 'robot_speed': args.robot_speed},
-        'dijkstra': {'resolution': 1.0, 'diagonal_movement': True}
-    }
-
-    return params.get(algorithm, {})
-
-
-def create_planner(algorithm: str, start: tuple, goal: tuple, env: Environment,
-                   args, vehicle_width, vehicle_length):
-    """创建路径规划器"""
-    # 获取车辆尺寸参数
-    vehicle_width = vehicle_width  # 车辆宽度
-    vehicle_length = vehicle_length  # 车辆长度
-
-    # 基本参数，所有规划器都需要
-    common_params = {
-        'start': start,
-        'goal': goal,
-        'env': env,
-    }
-
-    # 获取算法特定参数
-    algorithm_params = get_algorithm_specific_params(algorithm, args)
-
-    planners = {
-        'astar': AStar,
-        'rrt': RRT,
-        'rrt_star': RRTStar,
-        'informed_rrt': InformedRRTStar,
-        'timed_rrt': TimedRRTStar,
-        'dijkstra': Dijkstra
-    }
-
-    if algorithm not in planners:
-        raise ValueError(f"不支持的算法: {algorithm}")
-
-    planner_class = planners[algorithm]
-
-    # 根据算法类型添加额外参数
-    if algorithm == 'rrt':
-        # 只有基础RRT需要车辆参数
-        common_params.update({
-            'vehicle_width': vehicle_width,
-            'vehicle_length': vehicle_length
-        })
-    elif algorithm in ['rrt_star', 'informed_rrt', 'timed_rrt']:
-        # RRT*及其变体不需要车辆参数
-        pass
-
-    return planner_class(**common_params, **algorithm_params)
-
-
-# 加载配置文件
 def load_config(config_path: Optional[str] = None) -> Dict:
     """加载配置文件"""
     # 默认配置
     default_config = {
         # 窗口设置
         'window': {
-            'width': 860,
-            'height': 640,
+            'width': 1280,
+            'height': 677,
             'title': "停车场路径规划仿真器"
         },
 
         # 仿真参数
         'simulation': {
-            'scale': 5.0,  # 像素/米
+            'scale': 10.0,  # 像素/米
             'fps': 60,   # 帧率
             'dt': 0.05,  # 仿真时间步长(秒)
             'lookahead': 5.0,  # 路径跟踪前瞻距离
@@ -822,13 +53,20 @@ def load_config(config_path: Optional[str] = None) -> Dict:
 
         # 停车场布局参数
         'parking_lot': {
-            'spot_width': 3.0,   # 停车位宽度(m)
-            'spot_length': 6.0,  # 停车位长度(m)
-            'lane_width': 10.0,  # 车道宽度(m)
-            'total_columns': 4,  # 停车位列数
-            'spots_per_column': 6,  # 每列停车位数
-            'static_car_ratio': 0.7,  # 静态车辆占用率
-            'margin': 8.0,  # 边界margin
+            'geometry': {
+                'spot_width': 2.5,   # 停车位宽度(m)
+                'spot_length': 5.0,  # 停车位长度(m)
+                'lane_width': 8.0,  # 车道宽度(m)
+            },
+            'layout': {
+                'total_columns': 6,  # 停车位列数
+                'spots_per_row_top': 14,  # 顶部一排的停车位数量 (23-36)
+                'spots_per_row_middle': 12,  # 中间每排的停车位数量 (41-52, 53-64)
+                'spots_per_row_bottom': 14,  # 底部一排的停车位数量 (01-14)
+                'empty_spots': [26],  # 空白的停车位编号
+                'static_ratio': 0.7,  # 静态车辆占用率
+            },
+            'margin': 5.0,  # 边界margin
             'wall_thickness': 0.5,  # 墙壁厚度
             'entrance_width': 12.0,  # 入口宽度(m)
             'entrance_margin': 15.0  # 入口外的安全距离(m)
@@ -836,7 +74,7 @@ def load_config(config_path: Optional[str] = None) -> Dict:
 
         # 路径规划参数
         'path_planning': {
-            'default_algorithm': 'dijkstra',
+            'default_algorithm': 'rrt_star',
             'algorithms': {
                 'rrt': {
                     'step_size': 2.0,
@@ -850,154 +88,437 @@ def load_config(config_path: Optional[str] = None) -> Dict:
                 'informed_rrt': {
                     'step_size': 2.0,
                     'max_iterations': 10000,
-                    'focus_factor': 1.0
+                    'focus_ratio': 1.0
                 },
                 'timed_rrt': {
                     'step_size': 2.0,
                     'max_iterations': 10000,
-                    'robot_speed': 3.0
-                },
-                'astar': {
-                    'resolution': 0.5,
-                    'diagonal_movement': True,
-                    'weight': 1.0
-                },
-                'dijkstra': {
-                    'resolution': 1.0,
-                    'diagonal_movement': True
+                    'robot_speed': 1.0
                 }
             }
         },
 
         # 控制参数
         'control': {
-            'default_method': 'default',
-            'methods': ['default', 'pid', 'mpc', 'lqr'],
-            'pid': {
-                'kp_steer': 0.7,   # 转向比例系数
-                'ki_steer': 0.01,  # 转向积分系数
-                'kd_steer': 0.1,   # 转向微分系数
-                'kp_speed': 0.5,   # 速度比例系数
-                'ki_speed': 0.01,  # 速度积分系数
-                'kd_speed': 0.05   # 速度微分系数
-            },
-            'mpc': {
-                'horizon': 10,     # 预测步长
-                'dt': 0.1,         # 时间步长
-                'q_x': 1.0,        # 纵向误差权重
-                'q_y': 2.0,        # 横向误差权重
-                'q_heading': 3.0,  # 朝向误差权重
-                'r_steer': 1.0,    # 转向输入权重
-                'r_accel': 0.5     # 加速度输入权重
-            },
-            'lqr': {
-                'q_y': 1.0,        # 横向误差权重
-                'q_heading': 2.0,  # 朝向误差权重
-                'q_speed': 0.5,    # 速度误差权重
-                'r_steer': 0.1,    # 转向输入权重
-                'r_accel': 0.1     # 加速度输入权重
+            'default_method': 'pid',
+            'methods': {
+                'pid': {
+                    'steer': {
+                        'kp': 3.0,
+                        'ki': 0.01,
+                        'kd': 2.0
+                    },
+                    'speed': {
+                        'kp': 5.0,
+                        'ki': 2.0,
+                        'kd': 0.05
+                    }
+                },
+                'mpc': {
+                    'horizon': 10,
+                    'dt': 0.1,
+                    'weights': {
+                        'x': 1.0,
+                        'y': 2.0,
+                        'heading': 3.0
+                    }
+                },
+                'lqr': {
+                    'Q': [1.0, 10.0, 10.0],
+                    'R': [0.1]
+                }
             }
         }
     }
 
-    # 如果提供了配置文件路径，尝试加载
-    if config_path and os.path.exists(config_path):
+    # 如果提供了配置文件路径，从文件加载配置
+    if config_path:
         try:
             with open(config_path, 'r', encoding='utf-8') as f:
+                # 加载YAML配置
                 user_config = yaml.safe_load(f)
-                # 递归更新配置
-
-                def update_config(default, user):
-                    for key, value in user.items():
-                        if key in default and isinstance(value, dict) and isinstance(default[key], dict):
-                            update_config(default[key], value)
-                        else:
-                            default[key] = value
+                # 更新默认配置
                 update_config(default_config, user_config)
-            print(f"已加载配置文件: {config_path}")
+                print(f"已加载配置文件: {config_path}")
         except Exception as e:
             print(f"加载配置文件失败: {e}")
+            print("使用默认配置")
 
     return default_config
 
+# 递归更新配置字典
 
-def parse_args():
-    """解析命令行参数"""
-    parser = argparse.ArgumentParser(description='停车场路径规划仿真')
 
-    parser.add_argument(
-        '--config',
-        type=str,
-        default='config/parking_config.yaml',
-        help='配置文件路径'
+def update_config(default_config: Dict, user_config: Dict) -> None:
+    """递归更新配置字典"""
+    for key, value in user_config.items():
+        if isinstance(value, dict) and key in default_config and isinstance(default_config[key], dict):
+            update_config(default_config[key], value)
+        else:
+            default_config[key] = value
+
+
+# 修改RRTStar以支持时间维度
+
+
+def create_default_scene(width, height, config, env):
+    """
+    创建默认场景，包括停车场边界和障碍物，并直接添加到环境中
+
+    Parameters:
+    -----------
+    width: float
+        场景宽度
+    height: float
+        场景高度
+    config: dict
+        配置参数
+    env: ParkingEnvironment
+        停车场环境对象
+    """
+    # 获取配置参数
+    parking_config = config.get('parking_lot', {})
+    spot_width = parking_config.get('geometry', {}).get('spot_width', 2.5)
+    spot_length = parking_config.get('geometry', {}).get('spot_length', 5.0)
+    entrance_width = parking_config.get('entrance_width', 12.0)
+    wall_thickness = parking_config.get('wall_thickness', 0.5)
+
+    # 获取颜色设置
+    wall_color = (80, 80, 80, 255)  # 墙壁颜色 - 深灰色
+    spot_color = (220, 220, 220, 50)  # 停车位颜色 - 浅灰色半透明
+    car_body_color = (50, 50, 50, 230)  # 车身颜色 - 深灰色
+
+    # 添加边界墙
+    # 上边界
+    env.add_obstacle(
+        x=width/2,
+        y=0,
+        obstacle_type="rectangle",
+        width=width,
+        height=wall_thickness,
+        angle=0,
+        color=wall_color
     )
 
-    parser.add_argument(
-        '--algorithm',
-        type=str,
-        choices=['rrt', 'rrt_star', 'informed_rrt',
-                 'timed_rrt', 'dijkstra', 'astar'],
-        default='dijkstra',
-        help='路径规划算法'
+    # 下边界（左侧）
+    env.add_obstacle(
+        x=(width-entrance_width)/4,
+        y=height,
+        obstacle_type="rectangle",
+        width=(width-entrance_width)/2,
+        height=wall_thickness,
+        angle=0,
+        color=wall_color
     )
 
-    parser.add_argument(
-        '--iterations',
-        type=int,
-        default=1000,
-        help='最大迭代次数'
+    # 下边界（右侧）
+    env.add_obstacle(
+        x=width-(width-entrance_width)/4,
+        y=height,
+        obstacle_type="rectangle",
+        width=(width-entrance_width)/2,
+        height=wall_thickness,
+        angle=0,
+        color=wall_color
     )
 
-    parser.add_argument(
-        '--step_size',
-        type=float,
-        default=2,
-        help='步长'
+    # 左边界
+    env.add_obstacle(
+        x=0,
+        y=height/2,
+        obstacle_type="rectangle",
+        width=wall_thickness,
+        height=height,
+        angle=0,
+        color=wall_color
     )
 
-    parser.add_argument(
-        '--robot_speed',
-        type=float,
-        default=4,
-        help='机器人速度'
+    # 右边界
+    env.add_obstacle(
+        x=width,
+        y=height/2,
+        obstacle_type="rectangle",
+        width=wall_thickness,
+        height=height,
+        angle=0,
+        color=wall_color
     )
 
-    parser.add_argument(
-        '--random_scene',
-        action='store_true',
-        help='使用随机生成场景（默认使用默认场景）'
-    )
+    # 创建停车位布局
+    # 左侧停车区 - 纵向停车位
+    left_spots_x = spot_width * 1.5  # 靠近左边界
+    for i in range(12):  # 增加停车位数量
+        y_pos = (i + 1) * (spot_length + 0.5)  # 从下往上布置停车位
+        # 添加停车位标记（不作为障碍物）
+        env.add_obstacle(
+            x=left_spots_x,
+            y=y_pos,
+            obstacle_type="rectangle",
+            width=spot_width,
+            height=spot_length,
+            angle=0,  # 纵向停车位
+            color=spot_color,
+            is_parking_spot=True,
+            occupied=(i % 2 == 0),  # 增加占用率，每隔一个停车位放一辆车
+            is_filled=False,  # 不填充停车位
+            line_width=2  # 增加线宽使标记更明显
+        )
+        # 如果停车位被占用，添加车辆
+        if i % 2 == 0:
+            env.add_obstacle(
+                x=left_spots_x,
+                y=y_pos,
+                obstacle_type="rectangle",
+                width=spot_width * 0.8,
+                height=spot_length * 0.8,
+                angle=0,  # 纵向停车
+                color=car_body_color
+            )
 
-    parser.add_argument(
-        '--control_method',
-        type=str,
-        choices=['default', 'pid', 'mpc', 'lqr'],
-        default='pid',
-        help='车辆控制算法'
-    )
+    # 右侧停车区 - 纵向停车位
+    right_spots_x = width - spot_width * 1.5
+    for i in range(12):  # 增加停车位数量
+        y_pos = (i + 1) * (spot_length + 0.5)  # 从下往上布置停车位
+        # 添加停车位标记（不作为障碍物）
+        env.add_obstacle(
+            x=right_spots_x,
+            y=y_pos,
+            obstacle_type="rectangle",
+            width=spot_width,
+            height=spot_length,
+            angle=0,  # 纵向停车位
+            color=spot_color,
+            is_parking_spot=True,
+            occupied=(i % 2 == 1),  # 错开放置车辆
+            is_filled=False,  # 不填充停车位
+            line_width=2  # 增加线宽使标记更明显
+        )
+        # 如果停车位被占用，添加车辆
+        if i % 2 == 1:
+            env.add_obstacle(
+                x=right_spots_x,
+                y=y_pos,
+                obstacle_type="rectangle",
+                width=spot_width * 0.8,
+                height=spot_length * 0.8,
+                angle=0,  # 纵向停车
+                color=car_body_color
+            )
 
-    return parser.parse_args()
+    # 中间停车区（双排）- 横向停车位
+    middle_left_x = width/2 - spot_length * 0.7  # 调整位置以适应横向停车位
+    middle_right_x = width/2 + spot_length * 0.7  # 调整位置以适应横向停车位
+    for i in range(10):  # 增加停车位数量
+        y_pos = (i + 1) * (spot_width + 1.0)  # 从下往上布置停车位，调整间距
+        # 左排停车位 - 横向
+        env.add_obstacle(
+            x=middle_left_x,
+            y=y_pos,
+            obstacle_type="rectangle",
+            width=spot_length,  # 交换宽度和长度
+            height=spot_width,  # 交换宽度和长度
+            angle=0,  # 横向停车位
+            color=spot_color,
+            is_parking_spot=True,
+            occupied=(i % 3 == 2),
+            is_filled=False,  # 不填充停车位
+            line_width=2  # 增加线宽使标记更明显
+        )
+        if i % 3 == 2:
+            env.add_obstacle(
+                x=middle_left_x,
+                y=y_pos,
+                obstacle_type="rectangle",
+                width=spot_length * 0.8,  # 交换宽度和长度
+                height=spot_width * 0.8,  # 交换宽度和长度
+                angle=0,  # 横向停车
+                color=car_body_color
+            )
+
+        # 右排停车位 - 横向
+        env.add_obstacle(
+            x=middle_right_x,
+            y=y_pos,
+            obstacle_type="rectangle",
+            width=spot_length,  # 交换宽度和长度
+            height=spot_width,  # 交换宽度和长度
+            angle=0,  # 横向停车位
+            color=spot_color,
+            is_parking_spot=True,
+            occupied=(i % 3 == 0),
+            is_filled=False,  # 不填充停车位
+            line_width=2  # 增加线宽使标记更明显
+        )
+        if i % 3 == 0:
+            env.add_obstacle(
+                x=middle_right_x,
+                y=y_pos,
+                obstacle_type="rectangle",
+                width=spot_length * 0.8,  # 交换宽度和长度
+                height=spot_width * 0.8,  # 交换宽度和长度
+                angle=0,  # 横向停车
+                color=car_body_color
+            )
+
+
+def create_parking_scenario(use_random_scene=False, config=None):
+    """创建停车场场景，包括环境、起点和目标点"""
+    print("使用默认停车场场景")
+
+    # 如果没有提供配置，使用默认配置
+    if config is None:
+        config = load_config()
+
+    # 获取窗口尺寸
+    window_width = config['window']['width']
+    window_height = config['window']['height']
+
+    # 获取缩放比例
+    scale = config['simulation']['scale']
+
+    # 计算实际环境尺寸（米）
+    env_width = window_width / scale
+    env_height = window_height / scale
+
+    # 创建环境
+    env = ParkingEnvironment(env_width, env_height)
+
+    # 创建默认场景并添加到环境中
+    create_default_scene(env_width, env_height, config, env)
+
+    # 设置起点在入口中心
+    start_x = env_width / 2  # 入口中心的x坐标
+    start_y = env_height - 5.0  # 距离下边界5米
+    start = (start_x, start_y)
+
+    # 创建可用停车位列表（未占用的停车位）
+    parking_spots = []
+    spot_width = config['parking_lot']['geometry'].get('spot_width', 2.5)
+    spot_length = config['parking_lot']['geometry'].get('spot_length', 5.0)
+
+    # 左侧停车区
+    left_spots_x = spot_width * 1.5
+    for i in range(12):
+        y_pos = (i + 1) * (spot_length + 0.5)  # 从下往上布置停车位
+        if i % 2 != 0:  # 不被占用的停车位
+            parking_spots.append((left_spots_x, y_pos, 0))  # 添加朝向信息
+
+    # 右侧停车区
+    right_spots_x = env_width - spot_width * 1.5
+    for i in range(12):
+        y_pos = (i + 1) * (spot_length + 0.5)  # 从下往上布置停车位
+        if i % 2 != 1:  # 不被占用的停车位
+            parking_spots.append((right_spots_x, y_pos, 0))  # 添加朝向信息
+
+    # 中间停车区
+    middle_left_x = env_width/2 - spot_length * 0.7  # 调整位置以适应横向停车位
+    middle_right_x = env_width/2 + spot_length * 0.7  # 调整位置以适应横向停车位
+    for i in range(10):
+        y_pos = (i + 1) * (spot_width + 1.0)  # 从下往上布置停车位，调整间距
+        if i % 3 != 2:  # 左侧不被占用的停车位
+            parking_spots.append((middle_left_x, y_pos, 0))  # 添加朝向信息
+        if i % 3 != 0:  # 右侧不被占用的停车位
+            parking_spots.append((middle_right_x, y_pos, 0))  # 添加朝向信息
+
+    # 随机选择一个未占用的停车位作为目标
+    if parking_spots:
+        goal_x, goal_y, goal_orientation = random.choice(parking_spots)
+        goal = (goal_x, goal_y)
+        print("随机选择了一个未占用的停车位作为目标点")
+    else:
+        # 如果没有可用停车位，设置一个默认目标
+        goal_x = env_width * 0.8
+        goal_y = env_height * 0.5
+        goal = (goal_x, goal_y)
+        goal_orientation = 0  # 默认朝上
+        print("警告：没有找到未占用的停车位，使用默认目标点")
+
+    print(f"起点: {start}")
+    print(f"目标点: {goal}, 朝向: {goal_orientation}°")
+
+    return env, start, goal, goal_orientation
+
+
+def get_algorithm_specific_params(algorithm: str, args, ) -> Dict[str, Any]:
+    """获取算法特定的参数"""
+    base_params = {
+        'max_iterations': args.iterations if args.iterations is not None else 10000,
+        'step_size': args.step_size if args.step_size is not None else 2.0
+    }
+
+    params = {
+        'astar': {'resolution': 0.5, 'diagonal_movement': True, 'weight': 1.0},
+        'rrt': base_params,
+        'rrt_star': {**base_params, 'rewire_factor': 1.5},
+        'informed_rrt': {**base_params, 'focus_factor': 1.0},
+        'timed_rrt': {**base_params, 'robot_speed': args.robot_speed},
+        'dijkstra': {'resolution': 1.0, 'diagonal_movement': True},
+        'dstar_lite': {'resolution': 1.0, 'diagonal_movement': True},
+        'theta_star': {'resolution': 1.0, 'diagonal_movement': True}
+    }
+
+    return params.get(algorithm, {})
+
+
+def create_planner(algorithm: str, start: tuple, goal: tuple, env: Environment,
+                   args, vehicle_width, vehicle_length):
+    """创建路径规划器"""
+    # 获取车辆尺寸参数
+    vehicle_width = vehicle_width  # 车辆宽度
+    vehicle_length = vehicle_length  # 车辆长度
+
+    # 基本参数，所有规划器都需要
+    common_params = {
+        'start': start,
+        'goal': goal,
+        'env': env,
+        'vehicle_width': vehicle_width,  # 所有算法都需要车辆参数
+        'vehicle_length': vehicle_length
+    }
+
+    # 获取算法特定参数
+    algorithm_params = get_algorithm_specific_params(algorithm, args)
+
+    planners = {
+        'astar': AStar,
+        'rrt': RRT,
+        'rrt_star': RRTStar,
+        'informed_rrt': InformedRRTStar,
+        'timed_rrt': TimedRRTStar,
+        'dijkstra': Dijkstra,
+        'dstar_lite': DStarLite,
+        'theta_star': ThetaStar
+    }
+
+    if algorithm not in planners:
+        raise ValueError(f"不支持的算法: {algorithm}")
+
+    planner_class = planners[algorithm]
+
+    return planner_class(**common_params, **algorithm_params)
 
 
 def try_plan_path(
     planner,
     max_retries: int = 10
 ) -> Optional[List[Tuple[float, float]]]:
-    """尝试多次规划路径
+    """尝试规划路径，支持多次重试
 
     参数:
         planner: 路径规划器
         max_retries: 最大重试次数
 
     返回:
-        成功时返回路径，失败时返回None
+        规划的路径，如果失败则返回None
     """
-    for attempt in range(max_retries):
+
+    for i in range(max_retries):
+        print(f"第 {i+1} 次尝试...")
         path = planner.plan()
         if path:
-            print(f"在第 {attempt + 1} 次尝试中成功规划路径")
+            print(f"DEBUG: 成功规划路径，路径点数: {len(path)}")
             return path
-        print(f"第 {attempt + 1} 次尝试失败，继续尝试...")
+        print(f"第 {i+1} 次尝试失败，继续尝试...")
 
     print(f"经过 {max_retries} 次尝试后仍未找到可行路径")
     return None
@@ -1009,7 +530,9 @@ def check_position_valid(env: Environment, pos: tuple, vehicle_width,
 
     参数:
         env: 环境对象
-        pos: 位置坐标 (x, y)
+        pos: 位置坐标(x, y)
+        vehicle_width: 车辆宽度
+        vehicle_length: 车辆长度
         margin: 安全边距
 
     返回:
@@ -1017,8 +540,10 @@ def check_position_valid(env: Environment, pos: tuple, vehicle_width,
     """
     x, y = pos
 
-    # 基本碰撞检测
-    if env.check_collision(pos):
+    # 基本碰撞检测 - 使用车辆碰撞检测而不是简单的点碰撞检测
+    temp_vehicle = VehicleModel(x, y, 0, vehicle_length, vehicle_width)
+    collision_info = check_vehicle_collision(temp_vehicle, env)
+    if collision_info['collision']:
         return False
 
     # 使用A*验证从当前位置到四周的可达性
@@ -1051,14 +576,19 @@ def check_position_valid(env: Environment, pos: tuple, vehicle_width,
 
         # 确保测试点在环境范围内且不在障碍物内
         if (0 <= test_point[0] <= env.width and
-            0 <= test_point[1] <= env.height and
-                not env.check_collision(test_point)):
+                0 <= test_point[1] <= env.height):
 
-            test_planner = create_planner(
-                'dijkstra', pos, test_point, env, args, vehicle_width, vehicle_length)
-            path = test_planner.plan()
-            if path:
-                reachable_directions += 1
+            # 使用车辆碰撞检测而不是简单的点碰撞检测
+            test_vehicle = VehicleModel(
+                test_point[0], test_point[1], 0, vehicle_length, vehicle_width)
+            test_collision = check_vehicle_collision(test_vehicle, env)
+
+            if not test_collision['collision']:
+                test_planner = create_planner(
+                    'dijkstra', pos, test_point, env, args, vehicle_width, vehicle_length)
+                path = test_planner.plan()
+                if path:
+                    reachable_directions += 1
 
     return reachable_directions >= min_required
 
@@ -1080,6 +610,8 @@ def check_path_feasibility(
         goal: 终点坐标
         algorithm: 使用的规划算法
         args: 算法参数
+        vehicle_width: 车辆宽度
+        vehicle_length: 车辆长度
 
     返回:
         路径是否可行
@@ -1097,14 +629,22 @@ def check_path_feasibility(
         print("路径规划测试失败：无法找到可行路径")
         return False
 
+    # 检查路径是否与障碍物碰撞
+    collision_info = check_path_collision(
+        path, env, vehicle_length, vehicle_width)
+    if collision_info['collision']:
+        print("路径规划测试失败：路径与障碍物碰撞")
+        return False
+
     # 验证路径连续性
     for i in range(len(path)-1):
-        p1, p2 = path[i], path[i+1]
-        if env.check_segment_collision(p1, p2):
-            print("路径规划测试失败：路径段存在碰撞")
+        p1 = path[i]
+        p2 = path[i+1]
+        dist = np.hypot(p2[0] - p1[0], p2[1] - p1[1])
+        if dist > args.step_size * 1.5:  # 允许一定的误差
+            print(f"路径规划测试失败：路径不连续，在点 {i} 和 {i+1} 之间的距离为 {dist}")
             return False
 
-    print("路径可行性验证通过")
     return True
 
 
@@ -1132,7 +672,7 @@ def main():
         config['control']['default_method'] = args.control_method
 
     # 创建场景
-    env, start, _, _ = create_parking_scenario(
+    env, start, goal, goal_orientation = create_parking_scenario(
         use_random_scene=args.random_scene,
         config=config
     )
@@ -1149,335 +689,13 @@ def main():
         'vehicle': {
             'length': config['vehicle']['length'],
             'width': config['vehicle']['width'],
-            'wheelbase': config['vehicle']['wheelbase'],
-            'max_speed': config['vehicle']['max_speed'],
-            'max_accel': config['vehicle']['max_accel'],
-            'max_brake': config['vehicle']['max_brake'],
-            'max_steer': config['vehicle']['max_steer']
+            'wheelbase': config['vehicle']['wheelbase']
         }
     })
     simulator.set_environment(env)
 
-    # 交互式选择目标点并规划路径
+    # 启动交互式规划
     interactive_planning(simulator, env, start, args)
-
-
-class VehicleModel:
-    """简化的车辆动力学模型"""
-
-    def __init__(self, x: float = 0, y: float = 0, heading: float = 0,
-                 length: float = 4.5, width: float = 1.8):
-        """
-        初始化车辆模型
-
-        参数:
-            x: 初始x坐标
-            y: 初始y坐标
-            heading: 初始朝向角度(弧度)
-            length: 车辆长度(米)
-            width: 车辆宽度(米)
-        """
-        self.x = x
-        self.y = y
-        self.heading = heading  # 弧度
-        self.length = length
-        self.width = width
-        self.speed = 0.0  # m/s
-        self.acceleration = 0.0  # m/s^2
-        self.steer_angle = 0.0  # 转向角(弧度)
-        self.wheelbase = 2.7  # 轴距(米)
-
-        # 记录轨迹
-        self.trajectory = [(x, y)]
-
-        # 车辆控制参数
-        self.max_speed = 5.0  # m/s
-        self.max_accel = 2.0   # m/s^2
-        self.max_brake = 4.0   # m/s^2
-        self.max_steer = math.pi/4  # 最大转向角(弧度)
-
-    def get_corners(self) -> List[Tuple[float, float]]:
-        """获取车辆四个角的坐标(用于碰撞检测和渲染)"""
-        half_length = self.length / 2
-        half_width = self.width / 2
-
-        # 车辆本地坐标系中的四个角
-        corners_local = [
-            (half_length, half_width),   # 右前
-            (half_length, -half_width),  # 左前
-            (-half_length, -half_width),  # 左后
-            (-half_length, half_width)   # 右后
-        ]
-
-        # 转换到世界坐标系
-        cos_h = math.cos(self.heading)
-        sin_h = math.sin(self.heading)
-
-        corners_world = []
-        for lx, ly in corners_local:
-            wx = self.x + lx * cos_h - ly * sin_h
-            wy = self.y + lx * sin_h + ly * cos_h
-            corners_world.append((wx, wy))
-
-        return corners_world
-
-    def update(self, throttle: float, brake: float, steer: float, dt: float) -> None:
-        """
-        更新车辆状态
-
-        参数:
-            throttle: 油门输入 [0, 1]
-            brake: 制动输入 [0, 1]
-            steer: 转向输入 [-1, 1]
-            dt: 时间步长(秒)
-        """
-        # 计算加速度
-        if throttle > 0:
-            self.acceleration = throttle * self.max_accel
-        else:
-            self.acceleration = 0
-
-        if brake > 0:
-            self.acceleration -= brake * self.max_brake
-
-        # 更新速度
-        self.speed += self.acceleration * dt
-        self.speed = max(0, min(self.speed, self.max_speed))  # 限制速度范围
-
-        # 更新转向角
-        self.steer_angle = steer * self.max_steer
-
-        # 简化的自行车模型
-        if abs(self.speed) > 0.1:  # 当速度足够大时才转向
-            turn_radius = self.wheelbase / \
-                math.tan(abs(self.steer_angle) + 1e-10)
-            angular_velocity = self.speed / turn_radius if self.steer_angle != 0 else 0
-
-            if self.steer_angle < 0:
-                angular_velocity = -angular_velocity
-
-            # 更新位置和朝向
-            self.heading += angular_velocity * dt
-            self.heading = self.heading % (2 * math.pi)  # 规范化到 [0, 2π]
-
-        # 根据当前朝向和速度更新位置
-        self.x += self.speed * math.cos(self.heading) * dt
-        self.y += self.speed * math.sin(self.heading) * dt
-
-        # 记录轨迹
-        self.trajectory.append((self.x, self.y))
-
-
-def check_vehicle_collision(vehicle, env):
-    """
-    车辆碰撞检测算法，区分安全边界警告和实际碰撞
-
-    参数:
-        vehicle: 车辆模型对象
-        env: 环境对象
-
-    返回:
-        collision_info: 碰撞信息字典，包含是否碰撞、是否在安全边界内、碰撞位置和碰撞对象
-    """
-    # 初始化碰撞信息
-    collision_info = {
-        'collision': False,      # 是否发生实际碰撞
-        'safety_warning': False,  # 是否进入安全边界
-        'position': None,
-        'obstacle': None,
-        'distance': float('inf')
-    }
-
-    # 获取车辆四个角的坐标
-    corners = vehicle.get_corners()
-
-    # 创建车辆多边形
-    vehicle_polygon = Polygon(corners)
-
-    # 检查车辆与每个障碍物的碰撞
-    for i in range(0, len(env.obstacles), 2):  # 每次检查两个障碍物（实体和安全边界）
-        obstacle = env.obstacles[i]  # 实际障碍物
-        safety_obstacle = env.obstacles[i + 1] if i + \
-            1 < len(env.obstacles) else None  # 安全边界
-
-        # 检查实际障碍物
-        if hasattr(obstacle, 'type') and obstacle.type == 'circle':
-            # 圆形障碍物
-            obstacle_circle = Point(
-                obstacle.x, obstacle.y).buffer(obstacle.radius)
-            if vehicle_polygon.intersects(obstacle_circle):
-                collision_info['collision'] = True
-                collision_info['position'] = (obstacle.x, obstacle.y)
-                collision_info['obstacle'] = obstacle
-                collision_info['distance'] = np.hypot(
-                    vehicle.x - obstacle.x, vehicle.y - obstacle.y)
-                return collision_info  # 发生实际碰撞立即返回
-        else:
-            # 矩形障碍物
-            x_min = obstacle.x - obstacle.width / 2
-            x_max = obstacle.x + obstacle.width / 2
-            y_min = obstacle.y - obstacle.height / 2
-            y_max = obstacle.y + obstacle.height / 2
-
-            # 考虑障碍物的旋转角度
-            if hasattr(obstacle, 'angle') and obstacle.angle != 0:
-                # 创建旋转后的矩形
-                rect_corners = [
-                    (x_min, y_min),
-                    (x_max, y_min),
-                    (x_max, y_max),
-                    (x_min, y_max)
-                ]
-
-                # 旋转矩形的角点
-                cos_angle = math.cos(-obstacle.angle)
-                sin_angle = math.sin(-obstacle.angle)
-                rotated_corners = []
-
-                for x, y in rect_corners:
-                    # 平移到原点
-                    tx = x - obstacle.x
-                    ty = y - obstacle.y
-                    # 旋转
-                    rx = tx * cos_angle - ty * sin_angle
-                    ry = tx * sin_angle + ty * cos_angle
-                    # 平移回原位置
-                    rotated_corners.append((rx + obstacle.x, ry + obstacle.y))
-
-                obstacle_polygon = Polygon(rotated_corners)
-            else:
-                # 不旋转的矩形
-                obstacle_polygon = Polygon([
-                    (x_min, y_min),
-                    (x_max, y_min),
-                    (x_max, y_max),
-                    (x_min, y_max)
-                ])
-
-            # 检查碰撞
-            if vehicle_polygon.intersects(obstacle_polygon):
-                collision_info['collision'] = True
-                collision_info['position'] = (obstacle.x, obstacle.y)
-                collision_info['obstacle'] = obstacle
-                collision_info['distance'] = np.hypot(
-                    vehicle.x - obstacle.x, vehicle.y - obstacle.y)
-                return collision_info  # 发生实际碰撞立即返回
-
-        # 检查安全边界
-        if safety_obstacle:
-            if hasattr(safety_obstacle, 'type') and safety_obstacle.type == 'circle':
-                safety_circle = Point(safety_obstacle.x, safety_obstacle.y).buffer(
-                    safety_obstacle.radius)
-                if vehicle_polygon.intersects(safety_circle) and not collision_info['collision']:
-                    collision_info['safety_warning'] = True
-                    if not collision_info['position']:
-                        collision_info['position'] = (
-                            safety_obstacle.x, safety_obstacle.y)
-                        collision_info['obstacle'] = safety_obstacle
-                        collision_info['distance'] = np.hypot(
-                            vehicle.x - safety_obstacle.x, vehicle.y - safety_obstacle.y)
-            else:
-                # 矩形安全边界
-                x_min = safety_obstacle.x - safety_obstacle.width / 2
-                x_max = safety_obstacle.x + safety_obstacle.width / 2
-                y_min = safety_obstacle.y - safety_obstacle.height / 2
-                y_max = safety_obstacle.y + safety_obstacle.height / 2
-
-                if hasattr(safety_obstacle, 'angle') and safety_obstacle.angle != 0:
-                    rect_corners = [
-                        (x_min, y_min),
-                        (x_max, y_min),
-                        (x_max, y_max),
-                        (x_min, y_max)
-                    ]
-                    cos_angle = math.cos(-safety_obstacle.angle)
-                    sin_angle = math.sin(-safety_obstacle.angle)
-                    rotated_corners = []
-                    for x, y in rect_corners:
-                        tx = x - safety_obstacle.x
-                        ty = y - safety_obstacle.y
-                        rx = tx * cos_angle - ty * sin_angle
-                        ry = tx * sin_angle + ty * cos_angle
-                        rotated_corners.append(
-                            (rx + safety_obstacle.x, ry + safety_obstacle.y))
-                    safety_polygon = Polygon(rotated_corners)
-                else:
-                    safety_polygon = Polygon([
-                        (x_min, y_min),
-                        (x_max, y_min),
-                        (x_max, y_max),
-                        (x_min, y_max)
-                    ])
-
-                if vehicle_polygon.intersects(safety_polygon) and not collision_info['collision']:
-                    collision_info['safety_warning'] = True
-                    if not collision_info['position']:
-                        collision_info['position'] = (
-                            safety_obstacle.x, safety_obstacle.y)
-                        collision_info['obstacle'] = safety_obstacle
-                        collision_info['distance'] = np.hypot(
-                            vehicle.x - safety_obstacle.x, vehicle.y - safety_obstacle.y)
-
-    return collision_info
-
-
-def check_path_collision(path, env, vehicle_length, vehicle_width, steps=10):
-    """
-    检查路径是否与障碍物碰撞
-
-    参数:
-        path: 路径点列表
-        env: 环境对象
-        vehicle_length: 车辆长度
-        vehicle_width: 车辆宽度
-        steps: 每段路径的检查步数
-
-    返回:
-        collision_points: 碰撞点列表，如果没有碰撞则为空列表
-    """
-    collision_points = []
-
-    if len(path) < 2:
-        return collision_points
-
-    # 创建一个临时车辆模型用于碰撞检测
-    temp_vehicle = VehicleModel(0, 0, 0, vehicle_length, vehicle_width)
-
-    # 检查路径上的每个段
-    for i in range(len(path) - 1):
-        start = path[i]
-        end = path[i + 1]
-
-        # 计算段的方向
-        dx = end[0] - start[0]
-        dy = end[1] - start[1]
-        segment_length = math.sqrt(dx*dx + dy*dy)
-
-        if segment_length < 0.1:  # 忽略非常短的段
-            continue
-
-        # 计算段的朝向角度
-        heading = math.atan2(dy, dx)
-
-        # 在段上均匀采样点进行检查
-        for j in range(steps + 1):
-            t = j / steps
-            # 插值计算位置
-            x = start[0] + t * dx
-            y = start[1] + t * dy
-
-            # 更新临时车辆位置和朝向
-            temp_vehicle.x = x
-            temp_vehicle.y = y
-            temp_vehicle.heading = heading
-
-            # 检查碰撞
-            collision_info = check_vehicle_collision(temp_vehicle, env)
-            if collision_info['collision']:
-                collision_points.append((x, y))
-                break  # 找到碰撞点后停止检查当前段
-
-    return collision_points
 
 
 def interactive_planning(simulator, env, start, args):
@@ -1490,7 +708,6 @@ def interactive_planning(simulator, env, start, args):
         args: 命令行参数
     """
     import pygame
-    import math
 
     # 初始化pygame
     pygame.init()
@@ -1499,7 +716,8 @@ def interactive_planning(simulator, env, start, args):
     screen_width = 860
     screen_height = 640
     screen = pygame.display.set_mode((screen_width, screen_height))
-    pygame.display.set_caption("停车场路径规划 - 右键选择目标点，按T重新选择，按R重置车辆位置")
+    pygame.display.set_caption(
+        "停车场路径规划 - 右键选择未占用停车位，T重选，R重置，E切换算法，S切换转向模式，C切换控制方法")
 
     # 计算缩放比例
     scale_x = screen_width / env.width
@@ -1636,6 +854,71 @@ def interactive_planning(simulator, env, start, args):
         # 绘制车身
         pygame.draw.polygon(screen, car_color, screen_corners)
 
+        # 绘制车窗 (内部区域)
+        window_inset = 0.2  # 车窗内缩比例
+        half_length = vehicle.length / 2 * (1 - window_inset)
+        half_width = vehicle.width / 2 * (1 - window_inset)
+
+        # 车窗在车身坐标系中的位置
+        window_local = [
+            (half_length, half_width),   # 右前
+            (half_length, -half_width),  # 左前
+            (-half_length, -half_width),  # 左后
+            (-half_length, half_width)   # 右后
+        ]
+
+        # 转换到世界坐标系，再转换到屏幕坐标系
+        cos_h = math.cos(vehicle.heading)
+        sin_h = math.sin(vehicle.heading)
+
+        window_screen = []
+        for lx, ly in window_local:
+            wx = vehicle.x + lx * cos_h - ly * sin_h
+            wy = vehicle.y + lx * sin_h + ly * cos_h
+            sx = wx * scale + offset_x
+            sy = wy * scale + offset_y
+            window_screen.append((int(sx), int(sy)))
+
+        # 绘制车窗 (深蓝色半透明)
+        pygame.draw.polygon(screen, (30, 30, 80, 180), window_screen)
+
+        # 获取车轮位置和角度
+        wheels = vehicle.get_wheel_positions()
+
+        # 绘制车轮
+        for wheel_x, wheel_y, wheel_angle in wheels:
+            # 计算车轮的四个角
+            wheel_half_length = vehicle.wheel_length / 2
+            wheel_half_width = vehicle.wheel_width / 2
+
+            # 车轮在自身坐标系中的四个角
+            wheel_corners_local = [
+                (wheel_half_length, wheel_half_width),   # 右前
+                (wheel_half_length, -wheel_half_width),  # 左前
+                (-wheel_half_length, -wheel_half_width),  # 左后
+                (-wheel_half_length, wheel_half_width)   # 右后
+            ]
+
+            # 转换到世界坐标系，考虑车轮自身的转向角
+            cos_w = math.cos(wheel_angle)
+            sin_w = math.sin(wheel_angle)
+
+            wheel_corners_screen = []
+            for lx, ly in wheel_corners_local:
+                wx = wheel_x + lx * cos_w - ly * sin_w
+                wy = wheel_y + lx * sin_w + ly * cos_w
+                sx = wx * scale + offset_x
+                sy = wy * scale + offset_y
+                wheel_corners_screen.append((int(sx), int(sy)))
+
+            # 绘制车轮 (黑色)
+            pygame.draw.polygon(screen, (20, 20, 20), wheel_corners_screen)
+
+            # 绘制车轮中心点 (轮毂)
+            hub_x = int(wheel_x * scale + offset_x)
+            hub_y = int(wheel_y * scale + offset_y)
+            pygame.draw.circle(screen, (150, 150, 150), (hub_x, hub_y), 2)
+
         # 绘制车头方向
         head_x = vehicle.x + math.cos(vehicle.heading) * vehicle.length / 2
         head_y = vehicle.y + math.sin(vehicle.heading) * vehicle.length / 2
@@ -1645,19 +928,113 @@ def interactive_planning(simulator, env, start, args):
                        int(head_y * scale + offset_y))
         pygame.draw.line(screen, (0, 0, 255), center_screen, head_screen, 2)
 
-        # 如果发生碰撞或安全警告，绘制提示点
-        if collision_info and collision_info['position']:
-            cx, cy = collision_info['position']
-            collision_screen_pos = (
-                int(cx * scale + offset_x), int(cy * scale + offset_y))
-            if collision_detected:
-                # 红色圆点表示碰撞位置
-                pygame.draw.circle(screen, (255, 0, 0),
-                                   collision_screen_pos, 5)
-            elif collision_info.get('safety_warning'):
-                # 橙色圆点表示安全警告位置
-                pygame.draw.circle(screen, (255, 165, 0),
-                                   collision_screen_pos, 5)
+        # 绘制车灯
+        light_radius = vehicle.width * 0.1
+        light_offset_y = vehicle.width * 0.3
+
+        # 前灯位置 (黄色)
+        front_light_local = [
+            (vehicle.length/2 - light_radius, light_offset_y),  # 右前灯
+            (vehicle.length/2 - light_radius, -light_offset_y)  # 左前灯
+        ]
+
+        for lx, ly in front_light_local:
+            wx = vehicle.x + lx * cos_h - ly * sin_h
+            wy = vehicle.y + lx * sin_h + ly * cos_h
+            sx = int(wx * scale + offset_x)
+            sy = int(wy * scale + offset_y)
+            pygame.draw.circle(screen, (255, 255, 0),
+                               (sx, sy), int(light_radius * scale))
+
+        # 后灯位置 (红色)
+        rear_light_local = [
+            (-vehicle.length/2 + light_radius, light_offset_y),  # 右后灯
+            (-vehicle.length/2 + light_radius, -light_offset_y)  # 左后灯
+        ]
+
+        for lx, ly in rear_light_local:
+            wx = vehicle.x + lx * cos_h - ly * sin_h
+            wy = vehicle.y + lx * sin_h + ly * cos_h
+            sx = int(wx * scale + offset_x)
+            sy = int(wy * scale + offset_y)
+            pygame.draw.circle(screen, (255, 0, 0), (sx, sy),
+                               int(light_radius * scale))
+
+        # 仅当show_sensors为True时绘制传感器
+        if vehicle.show_sensors:
+            # 绘制传感器
+            sensor_positions = vehicle.get_sensor_positions()
+
+            # 绘制环视摄像头 (黄色)
+            for camera in sensor_positions['fisheye_cameras']:
+                pos = camera['pos']
+                color = camera['color']
+                sx = int(pos[0] * scale + offset_x)
+                sy = int(pos[1] * scale + offset_y)
+                pygame.draw.circle(screen, color, (sx, sy), 5)
+                # 绘制摄像头视野范围指示
+                pygame.draw.circle(screen, color, (sx, sy), 15, 1)
+
+            # 绘制前视摄像头 (红色)
+            if sensor_positions['front_camera']:
+                pos = sensor_positions['front_camera']['pos']
+                color = sensor_positions['front_camera']['color']
+                sx = int(pos[0] * scale + offset_x)
+                sy = int(pos[1] * scale + offset_y)
+                pygame.draw.circle(screen, color, (sx, sy), 4)
+                # 绘制摄像头视野范围
+                view_length = vehicle.length * 0.8
+                view_x = pos[0] + math.cos(vehicle.heading) * view_length
+                view_y = pos[1] + math.sin(vehicle.heading) * view_length
+                view_sx = int(view_x * scale + offset_x)
+                view_sy = int(view_y * scale + offset_y)
+                pygame.draw.line(screen, color, (sx, sy),
+                                 (view_sx, view_sy), 1)
+
+            # 绘制超声波雷达 (紫色)
+            for sensor in sensor_positions['ultrasonic']:
+                pos = sensor['pos']
+                color = sensor['color']
+                sx = int(pos[0] * scale + offset_x)
+                sy = int(pos[1] * scale + offset_y)
+                # 绘制超声波雷达点
+                pygame.draw.circle(screen, color, (sx, sy), 3)
+
+                # 计算超声波雷达方向 - 从车辆中心指向传感器
+                sensor_angle = math.atan2(
+                    pos[1] - vehicle.y, pos[0] - vehicle.x)
+                # 绘制超声波雷达探测范围
+                range_length = 1.0  # 探测范围1米
+                range_x = pos[0] + math.cos(sensor_angle) * range_length
+                range_y = pos[1] + math.sin(sensor_angle) * range_length
+                range_sx = int(range_x * scale + offset_x)
+                range_sy = int(range_y * scale + offset_y)
+                pygame.draw.line(screen, color, (sx, sy),
+                                 (range_sx, range_sy), 1)
+
+            # 绘制IMU (绿色)
+            if sensor_positions['imu']:
+                pos = sensor_positions['imu']['pos']
+                color = sensor_positions['imu']['color']
+                sx = int(pos[0] * scale + offset_x)
+                sy = int(pos[1] * scale + offset_y)
+                # 绘制IMU为一个小方块
+                imu_size = 4
+                pygame.draw.rect(screen, color, (sx - imu_size //
+                                 2, sy - imu_size//2, imu_size, imu_size))
+
+            # 绘制GPS (浅绿色)
+            if sensor_positions['gps']:
+                pos = sensor_positions['gps']['pos']
+                color = sensor_positions['gps']['color']
+                sx = int(pos[0] * scale + offset_x)
+                sy = int(pos[1] * scale + offset_y)
+                # 绘制GPS为一个十字形
+                cross_size = 5
+                pygame.draw.line(
+                    screen, color, (sx - cross_size, sy), (sx + cross_size, sy), 2)
+                pygame.draw.line(
+                    screen, color, (sx, sy - cross_size), (sx, sy + cross_size), 2)
 
     # 绘制函数
     def draw_scene():
@@ -1671,19 +1048,65 @@ def interactive_planning(simulator, env, start, args):
             width = obs.width * scale
             height = obs.height * scale
 
-            # 创建旋转后的矩形
-            rect = pygame.Rect(x - width/2, y - height/2, width, height)
-            surface = pygame.Surface((width, height), pygame.SRCALPHA)
-            pygame.draw.rect(surface, obs.color, surface.get_rect())
+            # 获取填充和线宽属性
+            is_filled = getattr(obs, 'is_filled', True)
+            line_width = getattr(obs, 'line_width', 1)
 
-            # 旋转并绘制
-            if hasattr(obs, 'angle'):
-                rotated_surface = pygame.transform.rotate(
-                    surface, -obs.angle * 180 / np.pi)
-                screen.blit(rotated_surface,
-                            rotated_surface.get_rect(center=(x, y)))
-            else:
-                screen.blit(surface, rect)
+            # 检查是否是停车位，使用特殊颜色显示
+            if hasattr(obs, 'is_parking_spot') and obs.is_parking_spot:
+                # 根据占用状态设置颜色
+                color = (255, 0, 0, 150) if obs.occupied else (
+                    0, 255, 0, 150)  # 红色表示占用，绿色表示空闲
+
+                if obs.type == "rectangle":
+                    # 创建旋转后的矩形
+                    rect = pygame.Rect(0, 0, width, height)
+                    surface = pygame.Surface((width, height), pygame.SRCALPHA)
+
+                    # 绘制边框和填充
+                    if is_filled:
+                        pygame.draw.rect(surface, color, rect)
+                    pygame.draw.rect(surface, color, rect, 3)  # 加粗边框
+
+                    # 旋转并绘制
+                    if hasattr(obs, 'angle') and obs.angle != 0:
+                        rotated_surface = pygame.transform.rotate(
+                            surface, -obs.angle)
+                        screen.blit(rotated_surface,
+                                    rotated_surface.get_rect(center=(x, y)))
+                    else:
+                        screen.blit(surface, pygame.Rect(
+                            x - width/2, y - height/2, width, height))
+                continue
+
+            # 绘制其他障碍物
+            if obs.type == "rectangle":
+                # 创建旋转后的矩形
+                rect = pygame.Rect(0, 0, width, height)
+                surface = pygame.Surface((width, height), pygame.SRCALPHA)
+
+                # 绘制矩形
+                if is_filled:
+                    pygame.draw.rect(surface, obs.color, rect)
+                else:
+                    pygame.draw.rect(surface, obs.color, rect, line_width)
+
+                # 旋转并绘制
+                if hasattr(obs, 'angle') and obs.angle != 0:
+                    rotated_surface = pygame.transform.rotate(
+                        surface, -obs.angle)
+                    screen.blit(rotated_surface,
+                                rotated_surface.get_rect(center=(x, y)))
+                else:
+                    screen.blit(surface, pygame.Rect(
+                        x - width/2, y - height/2, width, height))
+            elif obs.type == "circle":
+                if is_filled:
+                    pygame.draw.circle(screen, obs.color,
+                                       (int(x), int(y)), int(width/2))
+                else:
+                    pygame.draw.circle(screen, obs.color,
+                                       (int(x), int(y)), int(width/2), line_width)
 
         # 绘制起点
         start_x = start[0] * scale + offset_x
@@ -1723,37 +1146,48 @@ def interactive_planning(simulator, env, start, args):
         # 绘制车辆
         draw_vehicle()
 
+        # 创建半透明背景
+        info_surface = pygame.Surface((300, screen_height), pygame.SRCALPHA)
+        info_surface.fill((255, 255, 255, 180))  # 白色半透明背景
+        screen.blit(info_surface, (screen_width - 310, 0))
+
         # 显示提示信息
-        font = get_font(24)
+        font = get_font(20)  # 稍微减小字体大小
 
         # 显示状态文本
         status_surface = font.render(status_text, True, status_color)
         screen.blit(status_surface, (screen_width // 2 - status_surface.get_width() // 2,
-                                     screen_height - 40))
+                                     screen_height - 30))
 
-        # 显示操作提示
-        text1 = font.render("右键点击选择目标点", True, (0, 0, 0))
-        text2 = font.render("按T键重新选择目标点", True, (0, 0, 0))
-        text3 = font.render(f"当前算法: {args.algorithm}", True, (0, 0, 0))
-        text4 = font.render(f"控制方法: {current_control_method}", True, (0, 0, 0))
-        text5 = font.render("按C键切换控制方法", True, (0, 0, 0))
-        text6 = font.render("按R键重置车辆位置", True, (0, 0, 0))
-        text7 = font.render("碰撞检测: " + ("已触发" if collision_detected else "正常"),
-                            True, (255, 0, 0) if collision_detected else (0, 0, 0))
+        # 创建所有文本
+        texts = [
+            ("右键点击选择未占用的停车位作为目标点", (0, 0, 0)),
+            ("按T键重新选择目标点", (0, 0, 0)),
+            (f"当前算法: {args.algorithm}", (0, 0, 0)),
+            (f"控制方法: {current_control_method}", (0, 0, 0)),
+            (f"转向模式: {vehicle.steering_mode}", (0, 0, 0)),
+            ("按E键切换规划算法", (0, 0, 0)),
+            ("按C键切换控制方法", (0, 0, 0)),
+            ("按S键切换转向模式", (0, 0, 0)),
+            ("按R键重置车辆位置", (0, 0, 0)),
+            ("碰撞检测: " + ("已触发" if collision_detected else "正常"),
+             (255, 0, 0) if collision_detected else (0, 0, 0)),
+            ("绿色边框表示可选择的未占用停车位", (0, 150, 0))
+        ]
 
-        screen.blit(text1, (10, 10))
-        screen.blit(text2, (10, 40))
-        screen.blit(text3, (10, 70))
-        screen.blit(text4, (10, 100))
-        screen.blit(text5, (10, 130))
-        screen.blit(text6, (10, 160))
-        screen.blit(text7, (10, 190))
+        # 在右侧显示文本
+        y_offset = 20
+        x_pos = screen_width - 300
+        for text, color in texts:
+            text_surface = font.render(text, True, color)
+            screen.blit(text_surface, (x_pos, y_offset))
+            y_offset += 30
 
         # 如果发生碰撞，显示碰撞信息
         if collision_detected and collision_info:
             collision_text = "碰撞类型: 障碍物碰撞"
-            text8 = font.render(collision_text, True, (255, 0, 0))
-            screen.blit(text8, (10, 220))
+            text_surface = font.render(collision_text, True, (255, 0, 0))
+            screen.blit(text_surface, (x_pos, y_offset))
 
         pygame.display.flip()
 
@@ -1778,8 +1212,8 @@ def interactive_planning(simulator, env, start, args):
         if path:
             collision_points = check_path_collision(
                 path, env, vehicle.length, vehicle.width)
-            if collision_points:
-                print(f"警告：规划的路径存在 {len(collision_points)} 个碰撞点")
+            if collision_points['collision']:
+                print("警告：规划的路径存在碰撞")
                 # 这里可以选择是否继续使用这条路径
                 # 如果需要重新规划，可以返回 None
 
@@ -1805,13 +1239,13 @@ def interactive_planning(simulator, env, start, args):
                 status_color = (0, 0, 0)  # 黑色
                 draw_scene()  # 立即更新显示
 
-                # 检查目标点是否有效
-                if env.check_collision(goal):
-                    print("目标点在障碍物内，请重新选择")
-                    goal = None
-                    status_text = "目标点无效，请重新选择"
-                    status_color = (255, 0, 0)  # 红色
-                else:
+                # 检查目标点是否在未占用的停车位内
+                parking_spot = env.find_parking_spot(goal)
+                if parking_spot:
+                    # 将目标点设置为停车位中心
+                    goal = (parking_spot.x, parking_spot.y)
+                    print(f"已选择停车位，目标点调整为: {goal}")
+
                     # 规划路径
                     path = plan_path_to_goal()
                     if not path:
@@ -1827,6 +1261,11 @@ def interactive_planning(simulator, env, start, args):
                         collision_info = None
                         status_text = "正在仿真..."
                         status_color = (0, 0, 255)  # 蓝色
+                else:
+                    print("目标点不在未占用的停车位内，请重新选择")
+                    goal = None
+                    status_text = "请选择未占用的停车位作为目标点"
+                    status_color = (255, 0, 0)  # 红色
 
             # 按T键重新选择目标点
             elif event.type == pygame.KEYDOWN and event.key == pygame.K_t:
@@ -1857,7 +1296,37 @@ def interactive_planning(simulator, env, start, args):
                 follower.set_control_method(current_control_method)
                 status_text = f"控制方法已切换为: {current_control_method}"
                 status_color = (0, 0, 255)  # 蓝色
-                print(f"控制方法已切换为: {current_control_method}")
+
+            # 按E键切换规划算法
+            elif event.type == pygame.KEYDOWN and event.key == pygame.K_e:
+                # 切换规划算法
+                algorithms = ["rrt", "rrt_star", "informed_rrt", "timed_rrt",
+                              "astar", "dijkstra", "dstar_lite", "theta_star"]
+                current_algorithm_index = algorithms.index(
+                    args.algorithm) if args.algorithm in algorithms else 0
+                args.algorithm = algorithms[(
+                    current_algorithm_index + 1) % len(algorithms)]
+                status_text = f"规划算法已切换为: {args.algorithm}"
+                status_color = (0, 0, 255)  # 蓝色
+                print(f"规划算法已切换为: {args.algorithm}")
+
+                # 如果有目标点，重新规划路径
+                if goal and not simulating:
+                    path = plan_path_to_goal()
+                    if path:
+                        follower.set_path(path)
+
+            # 按S键切换转向模式
+            elif event.type == pygame.KEYDOWN and event.key == pygame.K_s:
+                # 切换转向模式
+                steering_modes = ["normal", "counter", "crab"]
+                current_mode_index = steering_modes.index(
+                    vehicle.steering_mode)
+                new_mode = steering_modes[(
+                    current_mode_index + 1) % len(steering_modes)]
+                vehicle.set_steering_mode(new_mode)
+                status_text = f"转向模式已切换为: {new_mode}"
+                status_color = (0, 0, 255)  # 蓝色
 
         # 更新仿真
         if simulating:
@@ -1872,393 +1341,122 @@ def interactive_planning(simulator, env, start, args):
     pygame.quit()
 
 
-class PathFollower:
-    """路径跟踪控制器"""
-
-    def __init__(self, lookahead=5.0, control_method='default'):
-        """
-        初始化路径跟踪控制器
-
-        参数:
-            lookahead: 前瞻距离(米)
-            control_method: 控制方法 ('default', 'pid', 'mpc', 'lqr')
-        """
-        self.path = []
-        self.lookahead = lookahead
-        self.current_target_idx = 0
-        self.control_method = control_method
-        self.target_speed = 5.0  # 目标速度(m/s)
-
-        # PID控制参数
-        self.pid_params = {
-            'kp_steer': 0.7,   # 转向比例系数
-            'ki_steer': 0.01,  # 转向积分系数
-            'kd_steer': 0.1,   # 转向微分系数
-            'kp_speed': 0.5,   # 速度比例系数
-            'ki_speed': 0.01,  # 速度积分系数
-            'kd_speed': 0.05   # 速度微分系数
-        }
-        self.steer_error_prev = 0.0
-        self.steer_error_sum = 0.0
-        self.speed_error_prev = 0.0
-        self.speed_error_sum = 0.0
-
-        # MPC控制参数
-        self.mpc_params = {
-            'horizon': 10,     # 预测步长
-            'dt': 0.1,         # 时间步长
-            'q_x': 1.0,        # 纵向误差权重
-            'q_y': 2.0,        # 横向误差权重
-            'q_heading': 3.0,  # 朝向误差权重
-            'r_steer': 1.0,    # 转向输入权重
-            'r_accel': 0.5     # 加速度输入权重
-        }
-
-        # LQR控制参数
-        self.lqr_params = {
-            'q_y': 1.0,        # 横向误差权重
-            'q_heading': 2.0,  # 朝向误差权重
-            'q_speed': 0.5,    # 速度误差权重
-            'r_steer': 0.1,    # 转向输入权重
-            'r_accel': 0.1     # 加速度输入权重
-        }
-
-    def set_path(self, path):
-        """设置跟踪路径"""
-        self.path = path
-        self.current_target_idx = 0
-
-    def set_control_method(self, method):
-        """设置控制方法"""
-        if method in ['default', 'pid', 'mpc', 'lqr']:
-            self.control_method = method
-        else:
-            print(f"不支持的控制方法: {method}，使用默认方法")
-            self.control_method = 'default'
-
-    def get_control(self, vehicle):
-        """获取控制输入"""
-        if not self.path:
-            return 0.0, 0.0, 0.0  # 无路径时不动作
-
-        if self.control_method == 'pid':
-            return self._pid_control(vehicle)
-        elif self.control_method == 'mpc':
-            return self._mpc_control(vehicle)
-        elif self.control_method == 'lqr':
-            return self._lqr_control(vehicle)
-        else:
-            return self._default_control(vehicle)
-
-    def _default_control(self, vehicle):
-        """默认控制方法"""
-        # 寻找目标点
-        target_idx = self.current_target_idx
-        min_dist = float('inf')
-
-        # 向前找到一个在前瞻距离范围内的点
-        for i in range(self.current_target_idx, len(self.path)):
-            tx, ty = self.path[i]
-            dist = math.sqrt((tx - vehicle.x)**2 + (ty - vehicle.y)**2)
-
-            if dist < min_dist:
-                min_dist = dist
-                target_idx = i
-
-            if dist > self.lookahead:
-                break
-
-        # 更新当前目标点索引
-        self.current_target_idx = target_idx
-
-        # 如果已接近终点，减速
-        if target_idx >= len(self.path) - 3:
-            return 0.0, 0.3, 0.0  # 轻踩刹车
-
-        # 获取目标点
-        tx, ty = self.path[target_idx]
-
-        # 计算车辆到目标点的向量
-        dx = tx - vehicle.x
-        dy = ty - vehicle.y
-
-        # 计算目标点相对于车头的角度
-        target_angle = math.atan2(dy, dx)
-        heading_error = target_angle - vehicle.heading
-
-        # 规范化到 [-π, π]
-        while heading_error > math.pi:
-            heading_error -= 2 * math.pi
-        while heading_error < -math.pi:
-            heading_error += 2 * math.pi
-
-        # 根据角度误差计算转向
-        steer = heading_error / (math.pi/4)  # 假设最大转向角为π/4
-        steer = max(-1.0, min(1.0, steer))  # 限制在 [-1, 1] 范围内
-
-        # 简单的速度控制：根据转向角的大小调整速度
-        throttle = 0.5 * (1.0 - 0.5 * abs(steer))
-        brake = 0.0
-
-        # 如果即将转弯，提前减速
-        if abs(steer) > 0.5:
-            throttle *= 0.5
-
-        return throttle, brake, steer
-
-    def _pid_control(self, vehicle):
-        """PID控制方法"""
-        # 动态调整前瞻距离 - 根据车速调整
-        dynamic_lookahead = max(3.0, min(self.lookahead, vehicle.speed * 0.8))
-
-        # 寻找目标点
-        target_idx = self.current_target_idx
-        min_dist = float('inf')
-        closest_idx = target_idx
-
-        # 首先找到最近点
-        for i in range(self.current_target_idx,
-                       min(self.current_target_idx + 30, len(self.path))):
-            if i >= len(self.path):
-                break
-
-            tx, ty = self.path[i]
-            dist = math.sqrt((tx - vehicle.x)**2 + (ty - vehicle.y)**2)
-
-            if dist < min_dist:
-                min_dist = dist
-                closest_idx = i
-
-        # 从最近点开始，找到前瞻距离范围内的目标点
-        target_idx = closest_idx
-        for i in range(closest_idx, len(self.path)):
-            tx, ty = self.path[i]
-            dist = math.sqrt((tx - vehicle.x)**2 + (ty - vehicle.y)**2)
-
-            if dist > dynamic_lookahead:
-                target_idx = i
-                break
-
-        # 确保目标点不会超出路径范围
-        target_idx = min(target_idx, len(self.path) - 1)
-
-        # 更新当前目标点索引，但不要后退
-        self.current_target_idx = max(self.current_target_idx, closest_idx)
-
-        # 如果已接近终点，减速
-        if target_idx >= len(self.path) - 3:
-            return 0.0, 0.3, 0.0  # 轻踩刹车
-
-        # 获取目标点
-        tx, ty = self.path[target_idx]
-
-        # 计算车辆到目标点的向量
-        dx = tx - vehicle.x
-        dy = ty - vehicle.y
-
-        # 计算目标点相对于车头的角度
-        target_angle = math.atan2(dy, dx)
-        heading_error = target_angle - vehicle.heading
-
-        # 规范化到 [-π, π]
-        while heading_error > math.pi:
-            heading_error -= 2 * math.pi
-        while heading_error < -math.pi:
-            heading_error += 2 * math.pi
-
-        # PID控制 - 转向
-        # 限制积分项，防止积分饱和
-        self.steer_error_sum = max(-3.0, min(3.0,
-                                             self.steer_error_sum + heading_error))
-        steer_error_diff = heading_error - self.steer_error_prev
-        self.steer_error_prev = heading_error
-
-        # 计算PID控制输出
-        steer = (self.pid_params['kp_steer'] * heading_error +
-                 self.pid_params['ki_steer'] * self.steer_error_sum +
-                 self.pid_params['kd_steer'] * steer_error_diff)
-
-        # 限制在 [-1, 1] 范围内
-        steer = max(-1.0, min(1.0, steer))
-
-        # PID控制 - 速度
-        speed_error = self.target_speed - vehicle.speed
-
-        # 限制积分项，防止积分饱和
-        self.speed_error_sum = max(-5.0, min(5.0,
-                                             self.speed_error_sum + speed_error))
-        speed_error_diff = speed_error - self.speed_error_prev
-        self.speed_error_prev = speed_error
-
-        # 计算PID控制输出
-        throttle_brake = (self.pid_params['kp_speed'] * speed_error +
-                          self.pid_params['ki_speed'] * self.speed_error_sum +
-                          self.pid_params['kd_speed'] * speed_error_diff)
-
-        # 将输出转换为油门和刹车
-        if throttle_brake >= 0:
-            throttle = min(1.0, throttle_brake)
-            brake = 0.0
-        else:
-            throttle = 0.0
-            brake = min(1.0, -throttle_brake)
-
-        # 如果即将转弯，减速
-        if abs(steer) > 0.5:
-            throttle *= 0.5
-        elif abs(steer) > 0.3:
-            throttle *= 0.7
-
-        return throttle, brake, steer
-
-    def _mpc_control(self, vehicle):
-        """简化的模型预测控制方法"""
-        # 寻找目标点
-        target_idx = self.current_target_idx
-        min_dist = float('inf')
-
-        # 向前找到一个在前瞻距离范围内的点
-        for i in range(self.current_target_idx, len(self.path)):
-            tx, ty = self.path[i]
-            dist = math.sqrt((tx - vehicle.x)**2 + (ty - vehicle.y)**2)
-
-            if dist < min_dist:
-                min_dist = dist
-                target_idx = i
-
-            if dist > self.lookahead:
-                break
-
-        # 更新当前目标点索引
-        self.current_target_idx = target_idx
-
-        # 如果已接近终点，减速
-        if target_idx >= len(self.path) - 3:
-            return 0.0, 0.3, 0.0  # 轻踩刹车
-
-        # 获取目标点
-        tx, ty = self.path[target_idx]
-
-        # 计算车辆到目标点的向量
-        dx = tx - vehicle.x
-        dy = ty - vehicle.y
-
-        # 计算目标点相对于车头的角度
-        target_angle = math.atan2(dy, dx)
-        heading_error = target_angle - vehicle.heading
-
-        # 规范化到 [-π, π]
-        while heading_error > math.pi:
-            heading_error -= 2 * math.pi
-        while heading_error < -math.pi:
-            heading_error += 2 * math.pi
-
-        # 简化的MPC控制 - 使用预测模型计算最优控制输入
-        # 这里使用简化方法：将状态误差与权重相乘作为控制输入
-        steer = (self.mpc_params['q_y'] * math.sin(heading_error) +
-                 self.mpc_params['q_heading'] * heading_error) / self.mpc_params['r_steer']
-
-        # 限制在 [-1, 1] 范围内
-        steer = max(-1.0, min(1.0, steer))
-
-        # 计算速度误差
-        speed_error = self.target_speed - vehicle.speed
-
-        # 计算油门和刹车
-        accel_cmd = self.mpc_params['q_x'] * \
-            speed_error / self.mpc_params['r_accel']
-
-        if accel_cmd >= 0:
-            throttle = min(1.0, accel_cmd)
-            brake = 0.0
-        else:
-            throttle = 0.0
-            brake = min(1.0, -accel_cmd)
-
-        # 如果即将转弯，减速
-        if abs(steer) > 0.5:
-            throttle *= 0.5
-        elif abs(steer) > 0.3:
-            throttle *= 0.7
-
-        return throttle, brake, steer
-
-    def _lqr_control(self, vehicle):
-        """简化的线性二次型调节器控制方法"""
-        # 寻找目标点
-        target_idx = self.current_target_idx
-        min_dist = float('inf')
-
-        # 向前找到一个在前瞻距离范围内的点
-        for i in range(self.current_target_idx, len(self.path)):
-            tx, ty = self.path[i]
-            dist = math.sqrt((tx - vehicle.x)**2 + (ty - vehicle.y)**2)
-
-            if dist < min_dist:
-                min_dist = dist
-                target_idx = i
-
-            if dist > self.lookahead:
-                break
-
-        # 更新当前目标点索引
-        self.current_target_idx = target_idx
-
-        # 如果已接近终点，减速
-        if target_idx >= len(self.path) - 3:
-            return 0.0, 0.3, 0.0  # 轻踩刹车
-
-        # 获取目标点
-        tx, ty = self.path[target_idx]
-
-        # 计算参考路径的切线方向（简化版）
-        next_idx = min(target_idx + 1, len(self.path) - 1)
-        next_x, next_y = self.path[next_idx]
-        ref_heading = math.atan2(next_y - ty, next_x - tx)
-
-        # 计算状态误差
-        dx = tx - vehicle.x
-        dy = ty - vehicle.y
-        dheading = ref_heading - vehicle.heading
-
-        # 规范化到 [-π, π]
-        while dheading > math.pi:
-            dheading -= 2 * math.pi
-        while dheading < -math.pi:
-            dheading += 2 * math.pi
-
-        # 计算横向误差（车辆坐标系中）
-        cos_heading = math.cos(vehicle.heading)
-        sin_heading = math.sin(vehicle.heading)
-        lateral_error = -dx * sin_heading + dy * cos_heading
-
-        # 简化的LQR控制 - 在实际应用中应求解Riccati方程
-        # 这里使用简化方法：将状态误差与权重相乘作为控制输入
-        steer = (self.lqr_params['q_y'] * lateral_error +
-                 self.lqr_params['q_heading'] * dheading) / self.lqr_params['r_steer']
-
-        # 限制在 [-1, 1] 范围内
-        steer = max(-1.0, min(1.0, steer))
-
-        # 计算速度误差
-        speed_error = self.target_speed - vehicle.speed
-
-        # 计算油门和刹车
-        accel_cmd = self.lqr_params['q_speed'] * \
-            speed_error / self.lqr_params['r_accel']
-
-        if accel_cmd >= 0:
-            throttle = min(1.0, accel_cmd)
-            brake = 0.0
-        else:
-            throttle = 0.0
-            brake = min(1.0, -accel_cmd)
-
-        # 如果即将转弯，减速
-        if abs(steer) > 0.5:
-            throttle *= 0.5
-
-        return throttle, brake, steer
+def draw_scene(screen, env, scale, offset_x, offset_y):
+    """绘制场景"""
+    for obstacle in env.obstacles:
+        # 转换坐标到屏幕坐标系
+        screen_x = int(obstacle.x * scale + offset_x)
+        screen_y = int(obstacle.y * scale + offset_y)
+
+        # 获取颜色
+        color = obstacle.color if hasattr(
+            obstacle, 'color') else (100, 100, 100, 200)
+
+        if obstacle.type == "rectangle":
+            # 计算矩形的屏幕尺寸
+            screen_width = int(obstacle.width * scale)
+            screen_height = int(obstacle.height * scale)
+
+            # 创建矩形表面
+            rect_surface = pygame.Surface(
+                (screen_width, screen_height), pygame.SRCALPHA)
+
+            # 绘制矩形
+            is_filled = obstacle.is_filled if hasattr(
+                obstacle, 'is_filled') else True
+            line_width = obstacle.line_width if hasattr(
+                obstacle, 'line_width') else 1
+
+            if is_filled:
+                pygame.draw.rect(rect_surface, color,
+                                 (0, 0, screen_width, screen_height))
+            else:
+                pygame.draw.rect(rect_surface, color, (0, 0, screen_width, screen_height),
+                                 width=line_width)
+
+            # 旋转矩形
+            angle = obstacle.angle if hasattr(obstacle, 'angle') else 0
+            rotated_surface = pygame.transform.rotate(rect_surface, angle)
+
+            # 获取旋转后的矩形中心位置
+            rot_rect = rotated_surface.get_rect(center=(screen_x, screen_y))
+
+            # 绘制到屏幕
+            screen.blit(rotated_surface, rot_rect.topleft)
+
+        elif obstacle.type == "circle":
+            # 计算圆的屏幕半径
+            screen_radius = int(obstacle.radius * scale)
+
+            is_filled = obstacle.is_filled if hasattr(
+                obstacle, 'is_filled') else True
+            line_width = obstacle.line_width if hasattr(
+                obstacle, 'line_width') else 1
+
+            if is_filled:
+                pygame.draw.circle(
+                    screen, color, (screen_x, screen_y), screen_radius)
+            else:
+                pygame.draw.circle(screen, color, (screen_x, screen_y), screen_radius,
+                                   width=line_width)
+
+
+def parse_args():
+    """解析命令行参数"""
+    parser = argparse.ArgumentParser(description='停车场路径规划仿真')
+
+    parser.add_argument(
+        '--config',
+        type=str,
+        default='config/parking_config.yaml',
+        help='配置文件路径'
+    )
+
+    parser.add_argument(
+        '--algorithm',
+        type=str,
+        choices=['rrt', 'rrt_star', 'informed_rrt',
+                 'timed_rrt', 'dijkstra', 'dstar_lite', 'theta_star', 'astar'],
+        default='dijkstra',
+        help='路径规划算法'
+    )
+
+    parser.add_argument(
+        '--iterations',
+        type=int,
+        default=1000,
+        help='最大迭代次数'
+    )
+
+    parser.add_argument(
+        '--step_size',
+        type=float,
+        default=2,
+        help='步长'
+    )
+
+    parser.add_argument(
+        '--robot_speed',
+        type=float,
+        default=4,
+        help='机器人速度'
+    )
+
+    parser.add_argument(
+        '--random_scene',
+        action='store_true',
+        help='使用随机生成场景（默认使用默认场景）'
+    )
+
+    parser.add_argument(
+        '--control_method',
+        type=str,
+        choices=['default', 'pid', 'mpc', 'lqr'],
+        default='pid',
+        help='车辆控制算法'
+    )
+
+    return parser.parse_args()
 
 
 if __name__ == "__main__":

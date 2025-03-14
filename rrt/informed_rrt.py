@@ -34,7 +34,9 @@ class InformedRRTStar(RRTStar):
         goal_sample_rate: float = 0.05,
         search_radius: float = 50.0,
         rewire_factor: float = 1.5,
-        focus_factor: float = 1.0  # 椭圆焦点缩放因子
+        focus_factor: float = 1.0,  # 椭圆焦点缩放因子
+        vehicle_width: float = 2.0,  # 车辆宽度
+        vehicle_length: float = 4.0  # 车辆长度
     ):
         """
         初始化Informed RRT*规划器
@@ -49,10 +51,13 @@ class InformedRRTStar(RRTStar):
             search_radius: 搜索半径
             rewire_factor: 重连接搜索半径因子
             focus_factor: 椭圆焦点缩放因子，控制采样区域大小
+            vehicle_width: 车辆宽度
+            vehicle_length: 车辆长度
         """
         super().__init__(
             start, goal, env, step_size,
-            max_iterations, goal_sample_rate, search_radius, rewire_factor
+            max_iterations, goal_sample_rate, search_radius, rewire_factor,
+            vehicle_width, vehicle_length
         )
         self.focus_factor = focus_factor
         self.c_best = float('inf')  # 当前最优路径代价
@@ -224,7 +229,9 @@ if __name__ == "__main__":
         step_size=5.0,
         max_iterations=1000,
         goal_sample_rate=0.1,
-        focus_factor=1.2
+        focus_factor=1.2,
+        vehicle_width=2.0,
+        vehicle_length=4.0
     )
 
     # 规划路径

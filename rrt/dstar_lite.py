@@ -38,7 +38,9 @@ class DStarLite:
         goal: Tuple[float, float],
         env,
         resolution: float = 1.0,
-        diagonal_movement: bool = True
+        diagonal_movement: bool = True,
+        vehicle_width: float = 2.0,  # 车辆宽度
+        vehicle_length: float = 4.0  # 车辆长度
     ):
         """
         初始化D* Lite规划器
@@ -49,10 +51,14 @@ class DStarLite:
             env: 环境对象，用于碰撞检测等
             resolution: 搜索分辨率，影响网格大小
             diagonal_movement: 是否允许对角线移动
+            vehicle_width: 车辆宽度(米)
+            vehicle_length: 车辆长度(米)
         """
         self.resolution = resolution
         self.diagonal_movement = diagonal_movement
         self.env = env
+        self.vehicle_width = vehicle_width
+        self.vehicle_length = vehicle_length
 
         # 计算区域边界
         self.min_x = 0
@@ -130,7 +136,7 @@ class DStarLite:
                 continue
 
             # 检查是否碰撞
-            if self.env.check_collision((new_x, new_y)):
+            if self.env.check_collision((new_x, new_y), self.vehicle_width, self.vehicle_length):
                 continue
 
             # 创建新状态

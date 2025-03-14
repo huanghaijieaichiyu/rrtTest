@@ -32,7 +32,9 @@ class RRTStar(RRT):
         max_iterations: int = 1000,
         goal_sample_rate: float = 0.05,
         search_radius: float = 50.0,
-        rewire_factor: float = 1.5  # 重连接搜索半径因子
+        rewire_factor: float = 1.5,  # 重连接搜索半径因子
+        vehicle_width: float = 1.8,  # 车辆宽度
+        vehicle_length: float = 4.5  # 车辆长度
     ):
         """
         初始化RRT*规划器
@@ -46,10 +48,13 @@ class RRTStar(RRT):
             goal_sample_rate: 采样目标点的概率
             search_radius: 搜索半径
             rewire_factor: 重连接搜索半径因子
+            vehicle_width: 车辆宽度(米)
+            vehicle_length: 车辆长度(米)
         """
         super().__init__(
             start, goal, env, step_size,
-            max_iterations, goal_sample_rate, search_radius
+            max_iterations, goal_sample_rate, search_radius,
+            vehicle_width, vehicle_length
         )
         self.rewire_factor = rewire_factor
 
@@ -230,9 +235,7 @@ class RRTStar(RRT):
         closest_ind = self._get_nearest_node_index(self.goal)
         closest_node = self.node_list[closest_ind]
 
-        if self._check_segment(
-            closest_node.x, closest_node.y, self.goal.x, self.goal.y
-        ):
+        if self._check_segment(closest_node, self.goal):
             self._connect_to_goal(closest_node)
             return self._extract_path()
 
@@ -273,3 +276,100 @@ if __name__ == "__main__":
         rrt_star.plot_path()
     else:
         print("未能找到路径")
+
+
+class TimedRRTStar(RRTStar):
+    def __init__(
+        self,
+        start,
+        goal,
+        env,
+        max_iterations,
+        step_size,
+        robot_speed=1.0,
+        vehicle_width=2.0,  # 添加车辆宽度参数
+        vehicle_length=4.0  # 添加车辆长度参数
+    ):
+        """初始化时间维度的RRT*规划器"""
+        super().__init__(
+            start, goal, env, step_size, max_iterations,
+            goal_sample_rate=0.05, search_radius=50.0, rewire_factor=1.5,
+            vehicle_width=vehicle_width, vehicle_length=vehicle_length
+        )
+        self.robot_speed = robot_speed
+        self.node_list = [self.start]  # Initialize node list with start node
+
+    def _random_node(self) -> Node:
+        """生成随机节点"""
+        if np.random.random() < self.goal_sample_rate:
+            return Node(self.goal.x, self.goal.y)
+        return Node(
+            np.random.uniform(self.min_x, self.max_x),
+            np.random.uniform(self.min_y, self.max_y)
+        )
+
+    def _steer(self, from_node: Node, to_node: Node) -> Node:
+        """从一个节点朝向另一个节点扩展"""
+        dist = np.hypot(to_node.x - from_node.x, to_node.y - from_node.y)
+        if dist > self.step_size:
+            theta = np.arctan2(to_node.y - from_node.y,
+                               to_node.x - from_node.x)
+            new_x = from_node.x + self.step_size * np.cos(theta)
+            new_y = from_node.y + self.step_size * np.sin(theta)
+            new_node = Node(new_x, new_y)
+        else:
+            new_node = Node(to_node.x, to_node.y)
+
+        new_node.parent = from_node
+        new_node.cost = from_node.cost + dist
+        new_node.path_x = from_node.path_x.copy()
+        new_node.path_y = from_node.path_y.copy()
+        new_node.path_x.append(new_node.x)
+        new_node.path_y.append(new_node.y)
+        return new_node
+
+    def plan(self) -> List[Tuple[float, float]]:
+        """规划路径，考虑时间维度"""
+        for _ in range(self.max_iterations):
+            # 随机采样
+            rnd = self._random_node()
+
+            # 找到最近的节点
+            nearest_ind = self._get_nearest_node_index(rnd)
+            nearest_node = self.node_list[nearest_ind]
+
+            # 扩展树
+            new_node = self._steer(nearest_node, rnd)
+
+            # 计算时间增量
+            dist = np.hypot(new_node.x - nearest_node.x,
+                            new_node.y - nearest_node.y)
+            time_increment = dist / self.robot_speed
+
+            # 检查时间维度的碰撞
+            if not self.env.check_segment_collision_with_time(
+                (nearest_node.x, nearest_node.y),
+                (new_node.x, new_node.y),
+                nearest_node.cost,  # 使用cost作为时间
+                nearest_node.cost + time_increment
+            ):
+                # 找到附近的节点
+                near_nodes = self._find_near_nodes(new_node)
+                # 选择最优父节点
+                new_node = self._choose_parent(new_node, near_nodes)
+
+                if new_node.parent is not None:
+                    # 添加新节点
+                    self.node_list.append(new_node)
+                    # 尝试重新连接
+                    self._rewire(new_node, near_nodes)
+
+                    # 检查是否到达目标
+                    if self._is_near_goal(new_node):
+                        if self._check_segment(new_node, self.goal):
+                            self._connect_to_goal(new_node)
+                            return self._extract_path()
+
+        return []
+
+# 创建停车场场景

@@ -38,7 +38,9 @@ class ThetaStar:
         env,
         resolution: float = 1.0,
         diagonal_movement: bool = True,
-        weight: float = 1.0  # 启发式权重
+        weight: float = 1.0,  # 启发式权重
+        vehicle_width: float = 2.0,  # 车辆宽度
+        vehicle_length: float = 4.0  # 车辆长度
     ):
         """
         初始化Theta*规划器
@@ -50,6 +52,8 @@ class ThetaStar:
             resolution: 搜索分辨率，影响网格大小
             diagonal_movement: 是否允许对角线移动
             weight: 启发式权重
+            vehicle_width: 车辆宽度(米)
+            vehicle_length: 车辆长度(米)
         """
         self.start = Node(0, 0, start[0], start[1])
         self.goal = Node(0, 0, goal[0], goal[1])
@@ -57,6 +61,8 @@ class ThetaStar:
         self.resolution = resolution
         self.diagonal_movement = diagonal_movement
         self.weight = weight
+        self.vehicle_width = vehicle_width
+        self.vehicle_length = vehicle_length
 
         # 计算区域边界
         self.min_x = 0
@@ -113,7 +119,7 @@ class ThetaStar:
         dy *= 2
 
         for _ in range(n):
-            if self.env.check_collision((x, y)):
+            if self.env.check_collision((x, y), self.vehicle_width, self.vehicle_length):
                 return False
 
             if error > 0:
@@ -155,7 +161,7 @@ class ThetaStar:
                 continue
 
             # 检查是否碰撞
-            if self.env.check_collision((new_x, new_y)):
+            if self.env.check_collision((new_x, new_y), self.vehicle_width, self.vehicle_length):
                 continue
 
             # 创建新节点

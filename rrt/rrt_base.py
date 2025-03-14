@@ -200,13 +200,15 @@ class RRT:
     def _check_segment(self, node1: Node, node2: Node) -> bool:
         """检查两点之间的线段是否无碰撞，考虑车辆尺寸"""
         # 调用环境的碰撞检测，传入车辆尺寸参数
+        print(
+            f"DEBUG RRT: 检查线段 ({node1.x:.2f}, {node1.y:.2f}) -> ({node2.x:.2f}, {node2.y:.2f})")
         result = not self.env.check_segment_collision(
             (node1.x, node1.y),
             (node2.x, node2.y),
             self.vehicle_width,
             self.vehicle_length
         )
-        print(f"线段碰撞检测: {result}")
+        print(f"DEBUG RRT: 线段碰撞检测结果: {'无碰撞' if result else '有碰撞'}")
         return result
 
     def _is_near_goal(self, node: Node) -> bool:

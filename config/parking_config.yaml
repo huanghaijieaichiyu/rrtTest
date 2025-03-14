@@ -2,13 +2,13 @@
 
 # 窗口设置
 window:
-  width: 860
-  height: 640
+  width: 1280
+  height: 677
   title: "停车场路径规划仿真器"
 
 # 仿真参数
 simulation:
-  scale: 5  # 像素/米
+  scale: 10  # 像素/米 - 调整为更高的值以匹配图片分辨率
   fps: 60   # 帧率
   dt: 0.05  # 仿真时间步长(秒)
   lookahead: 5.0  # 路径跟踪前瞻距离
@@ -28,36 +28,178 @@ vehicle:
 # 停车场布局
 parking_lot:
   geometry:
-    spot_width: 3.0   # 停车位宽度(m)
-    spot_length: 6.0  # 停车位长度(m)
-    lane_width: 10.0  # 车道宽度(m)
+    spot_width: 2.5   # 停车位宽度(m) - 根据图片调整
+    spot_length: 5.0  # 停车位长度(m) - 根据图片调整
+    lane_width: 8.0  # 车道宽度(m) - 根据图片调整
+  spot_width: 2.5   # 停车位宽度(m)
+  spot_height: 5.0  # 停车位高度(m)
+  spot_margin: 0.5  # 停车位间距(m)
+  safety_zone_width: 0.3  # 安全区域宽度(m)
   layout:
-    total_columns: 4  # 停车位列数
-    spots_per_column: 6  # 每列停车位数
-    static_ratio: 0.7  # 静态车辆占用率
+    # 第一排停车位 (上排)
+    - type: "parking_spot"
+      position: [20, 20]
+      id: 1
+      static: true
+      orientation: 90  # 朝向角度(度)
+    - type: "parking_spot"
+      position: [30, 20]
+      id: 2
+      orientation: 90
+    - type: "parking_spot"
+      position: [40, 20]
+      id: 3
+      static: true
+      orientation: 90
+    - type: "parking_spot"
+      position: [50, 20]
+      id: 4
+      orientation: 90
+    - type: "parking_spot"
+      position: [60, 20]
+      id: 5
+      static: true
+      orientation: 90
+    - type: "parking_spot"
+      position: [70, 20]
+      id: 6
+      orientation: 90
+    - type: "parking_spot"
+      position: [80, 20]
+      id: 7
+      static: true
+      orientation: 90
+    - type: "parking_spot"
+      position: [90, 20]
+      id: 8
+      orientation: 90
+      
+    # 第二排停车位 (中排)
+    - type: "parking_spot"
+      position: [20, 40]
+      id: 9
+      static: true
+      orientation: 270  # 朝向角度(度)
+    - type: "parking_spot"
+      position: [30, 40]
+      id: 10
+      static: true
+      orientation: 270
+    - type: "parking_spot"
+      position: [40, 40]
+      id: 11
+      orientation: 270
+    - type: "parking_spot"
+      position: [50, 40]
+      id: 12
+      orientation: 270
+    - type: "parking_spot"
+      position: [60, 40]
+      id: 13
+      static: true
+      orientation: 270
+    - type: "parking_spot"
+      position: [70, 40]
+      id: 14
+      orientation: 270
+    - type: "parking_spot"
+      position: [80, 40]
+      id: 15
+      orientation: 270
+    - type: "parking_spot"
+      position: [90, 40]
+      id: 16
+      static: true
+      orientation: 270
+      
+    # 第三排停车位 (下排)
+    - type: "parking_spot"
+      position: [20, 60]
+      id: 17
+      orientation: 90
+    - type: "parking_spot"
+      position: [30, 60]
+      id: 18
+      static: true
+      orientation: 90
+    - type: "parking_spot"
+      position: [40, 60]
+      id: 19
+      orientation: 90
+    - type: "parking_spot"
+      position: [50, 60]
+      id: 20
+      static: true
+      orientation: 90
+    - type: "parking_spot"
+      position: [60, 60]
+      id: 21
+      orientation: 90
+    - type: "parking_spot"
+      position: [70, 60]
+      id: 22
+      static: true
+      orientation: 90
+    - type: "parking_spot"
+      position: [80, 60]
+      id: 23
+      orientation: 90
+    - type: "parking_spot"
+      position: [90, 60]
+      id: 24
+      static: true
+      orientation: 90
+      
+    # 禁止停车区域
+    - type: "no_parking"
+      position: [10, 30]
+      width: 10
+      height: 3
+    - type: "no_parking"
+      position: [100, 50]
+      width: 10
+      height: 3
   safety:
-    boundary_margin: 8.0
+    boundary_margin: 5.0
     entrance:
       width: 12.0  # 入口宽度(m)
       approach_length: 15.0  # 入口引道长度(m)
+  wall_thickness: 0.5  # 墙壁厚度
+  margin: 5.0  # 边界margin
+  entrance_width: 12.0  # 入口宽度(m)
+  entrance_margin: 15.0  # 入口外的安全距离(m)
+  colors:
+    wall: [80, 80, 80, 255]  # 墙壁颜色 - 深灰色
+    parking_spot: [220, 220, 220, 50]  # 停车位颜色 - 浅灰色半透明
+    parking_spot_border: [150, 150, 150, 200]  # 停车位边框颜色
+    parking_spot_line: [255, 255, 255, 200]  # 停车位线颜色
+    no_parking: [200, 200, 200, 150]  # 禁止停车区域颜色
+    car_body: [50, 50, 50, 230]  # 车身颜色 - 深灰色
+    car_window: [150, 150, 150, 180]  # 车窗颜色 - 浅灰色
+    car_highlight: [200, 200, 200, 200]  # 车辆高光颜色
+    safety_zone: [255, 165, 0, 100]  # 安全区域颜色 - 橙色半透明
 
 # 路径规划
 path_planning:
-  default_algorithm: "rrt_star"
+  default_algorithm: "rrt_star"  # 使用RRT*算法
   algorithms:
     rrt:
-      step_size: 2.0
-      max_iterations: 10000
+      step_size: 3.0  # 增大步长
+      max_iterations: 20000  # 增加最大迭代次数
     rrt_star:
-      step_size: 2.0
-      max_iterations: 10000
-      rewire_radius: 1.5
+      step_size: 3.0  # 增大步长
+      max_iterations: 20000  # 增加最大迭代次数
+      rewire_radius: 3.0  # 增大重连接半径
     informed_rrt:
-      step_size: 2.0
-      max_iterations: 10000
-      focus_ratio: 1.0
+      step_size: 3.0  # 增大步长
+      max_iterations: 20000  # 增加最大迭代次数
+      focus_ratio: 1.5  # 增大聚焦比例
+    timed_rrt:
+      step_size: 3.0  # 增大步长
+      max_iterations: 20000  # 增加最大迭代次数
+      robot_speed: 2.0  # 增大机器人速度
 
-# 控制参数（新增模块）
+# 控制参数
 control:
   default_method: "pid"
   methods:

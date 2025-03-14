@@ -148,12 +148,14 @@ class Environment:
         else:
             raise ValueError("无效的障碍物参数")
 
-    def check_collision(self, point: Tuple[float, float]) -> bool:
+    def check_collision(self, point: Tuple[float, float], vehicle_width: float = 0.0, vehicle_length: float = 0.0) -> bool:
         """
         检查点是否与障碍物碰撞
 
         参数:
             point: 待检查的点坐标 (x, y)
+            vehicle_width: 车辆宽度，默认为0（点）
+            vehicle_length: 车辆长度，默认为0（点）
 
         返回:
             是否发生碰撞
@@ -164,6 +166,11 @@ class Environment:
         if not (0 <= x <= self.width and 0 <= y <= self.height):
             return True
 
+        # 如果提供了车辆尺寸，使用check_segment_collision方法
+        if vehicle_width > 0 and vehicle_length > 0 and hasattr(self, 'check_segment_collision'):
+            return self.check_segment_collision(point, point, vehicle_width, vehicle_length)
+
+        # 否则使用点碰撞检测
         # 检查是否与障碍物碰撞
         for obstacle in self.obstacles:
             if isinstance(obstacle, CircleObstacle):
@@ -634,3 +641,410 @@ if __name__ == "__main__":
     new_env = Environment()
     new_env.load_map("test_map.yaml")
     new_env.visualize()
+
+
+class Obstacle:
+    def __init__(self, x, y, color=(0, 0, 0, 255), is_filled=True, line_width=2):
+        self.x = x
+        self.y = y
+        self.color = color
+        self.is_filled = is_filled
+        self.line_width = line_width
+
+    def check_collision(self, x, y):
+        """检查点(x, y)是否与障碍物碰撞"""
+        raise NotImplementedError("子类必须实现此方法")
+
+    def check_line_collision(self, x1, y1, x2, y2):
+        """检查线段是否与障碍物碰撞"""
+        raise NotImplementedError("子类必须实现此方法")
+
+# 矩形障碍物
+
+
+class RectangleObstacle(Obstacle):
+    def __init__(self, x, y, width, height, angle=0.0, color=(0, 0, 0, 255), is_filled=True, line_width=2):
+        super().__init__(x, y, color, is_filled, line_width)
+        self.width = width
+        self.height = height
+        self.angle = angle  # 角度，单位为度
+        self.angle_rad = math.radians(angle)  # 转换为弧度
+        # 兼容旧代码的属性
+        self.type = "rectangle"
+        self.radius = 0.0
+        self.is_parking_spot = False
+        self.occupied = False
+
+    def check_collision(self, x, y):
+        """检查点(x, y)是否与矩形障碍物碰撞"""
+        # 如果是未占用的停车位，不视为障碍物
+        if self.is_parking_spot and not self.occupied:
+            return False
+
+        # 将点转换到矩形的局部坐标系
+        dx = x - self.x
+        dy = y - self.y
+
+        # 旋转点
+        rotated_x = dx * math.cos(-self.angle_rad) - \
+            dy * math.sin(-self.angle_rad)
+        rotated_y = dx * math.sin(-self.angle_rad) + \
+            dy * math.cos(-self.angle_rad)
+
+        # 检查点是否在矩形内
+        return (abs(rotated_x) <= self.width / 2 and abs(rotated_y) <= self.height / 2)
+
+    def check_line_collision(self, x1, y1, x2, y2):
+        """检查线段是否与矩形障碍物碰撞"""
+        # 如果是未占用的停车位，不视为障碍物
+        if self.is_parking_spot and not self.occupied:
+            return False
+
+        # 将线段的两个端点转换到矩形的局部坐标系
+        dx1 = x1 - self.x
+        dy1 = y1 - self.y
+        dx2 = x2 - self.x
+        dy2 = y2 - self.y
+
+        # 旋转点
+        rotated_x1 = dx1 * math.cos(-self.angle_rad) - \
+            dy1 * math.sin(-self.angle_rad)
+        rotated_y1 = dx1 * math.sin(-self.angle_rad) + \
+            dy1 * math.cos(-self.angle_rad)
+        rotated_x2 = dx2 * math.cos(-self.angle_rad) - \
+            dy2 * math.sin(-self.angle_rad)
+        rotated_y2 = dx2 * math.sin(-self.angle_rad) + \
+            dy2 * math.cos(-self.angle_rad)
+
+        # 矩形的边界
+        left = -self.width / 2
+        right = self.width / 2
+        bottom = -self.height / 2
+        top = self.height / 2
+
+        # 检查线段是否与矩形相交
+        # 使用Cohen-Sutherland算法的思想
+
+        # 如果两个端点都在矩形内，则线段与矩形相交
+        if (left <= rotated_x1 <= right and bottom <= rotated_y1 <= top) or \
+           (left <= rotated_x2 <= right and bottom <= rotated_y2 <= top):
+            return True
+
+        # 检查线段是否与矩形的四条边相交
+        # 左边
+        if self._check_line_intersection(rotated_x1, rotated_y1, rotated_x2, rotated_y2, left, bottom, left, top):
+            return True
+        # 右边
+        if self._check_line_intersection(rotated_x1, rotated_y1, rotated_x2, rotated_y2, right, bottom, right, top):
+            return True
+        # 下边
+        if self._check_line_intersection(rotated_x1, rotated_y1, rotated_x2, rotated_y2, left, bottom, right, bottom):
+            return True
+        # 上边
+        if self._check_line_intersection(rotated_x1, rotated_y1, rotated_x2, rotated_y2, left, top, right, top):
+            return True
+
+        return False
+
+    def _check_line_intersection(self, x1, y1, x2, y2, x3, y3, x4, y4):
+        """检查两条线段是否相交"""
+        # 计算分母
+        den = (y4 - y3) * (x2 - x1) - (x4 - x3) * (y2 - y1)
+
+        # 如果分母为0，则线段平行或共线
+        if den == 0:
+            return False
+
+        # 计算分子
+        ua = ((x4 - x3) * (y1 - y3) - (y4 - y3) * (x1 - x3)) / den
+        ub = ((x2 - x1) * (y1 - y3) - (y2 - y1) * (x1 - x3)) / den
+
+        # 如果ua和ub都在[0,1]范围内，则线段相交
+        return (0 <= ua <= 1) and (0 <= ub <= 1)
+
+# 圆形障碍物
+
+
+class CircleObstacle(Obstacle):
+    def __init__(self, x, y, radius, color=(0, 0, 0, 255), is_filled=True, line_width=2):
+        super().__init__(x, y, color, is_filled, line_width)
+        self.radius = radius
+        # 兼容旧代码的属性
+        self.type = "circle"
+        self.width = radius * 2
+        self.height = radius * 2
+        self.angle = 0.0
+        self.is_parking_spot = False
+        self.occupied = False
+
+    def check_collision(self, x, y):
+        """检查点(x, y)是否与圆形障碍物碰撞"""
+        # 如果是未占用的停车位，不视为障碍物
+        if self.is_parking_spot and not self.occupied:
+            return False
+
+        # 计算点到圆心的距离
+        distance = math.sqrt((x - self.x) ** 2 + (y - self.y) ** 2)
+
+        # 如果距离小于等于半径，则点在圆内
+        return distance <= self.radius
+
+    def check_line_collision(self, x1, y1, x2, y2):
+        """检查线段是否与圆形障碍物碰撞"""
+        # 如果是未占用的停车位，不视为障碍物
+        if self.is_parking_spot and not self.occupied:
+            return False
+
+        # 计算线段的方向向量
+        dx = x2 - x1
+        dy = y2 - y1
+
+        # 计算线段长度的平方
+        length_squared = dx ** 2 + dy ** 2
+
+        # 如果线段长度为0，则检查端点是否在圆内
+        if length_squared == 0:
+            return self.check_collision(x1, y1)
+
+        # 计算从线段起点到圆心的向量
+        cx = self.x - x1
+        cy = self.y - y1
+
+        # 计算线段上最接近圆心的点的参数t
+        t = max(0, min(1, (cx * dx + cy * dy) / length_squared))
+
+        # 计算线段上最接近圆心的点
+        closest_x = x1 + t * dx
+        closest_y = y1 + t * dy
+
+        # 计算最接近点到圆心的距离
+        distance = math.sqrt((closest_x - self.x) ** 2 +
+                             (closest_y - self.y) ** 2)
+
+        # 如果距离小于等于半径，则线段与圆相交
+        return distance <= self.radius
+
+
+class DynamicObstacle:
+    def __init__(self, x0, y0, vx, vy, width, height):
+        """初始化动态障碍物
+        参数:
+            x0, y0: 初始位置
+            vx, vy: 速度分量
+            width, height: 宽度和高度
+        """
+        self.x0 = x0
+        self.y0 = y0
+        self.vx = vx
+        self.vy = vy
+        self.width = width
+        self.height = height
+
+    def get_position_at_time(self, t):
+        """计算在时间t时的位置"""
+        x = self.x0 + self.vx * t
+        y = self.y0 + self.vy * t
+        return x, y
+
+
+class Vehicle(RectangleObstacle):
+    """
+    车辆类，继承自矩形障碍物
+    用于静态车辆表示和渲染
+    """
+
+    def __init__(self, x, y, length, width, orientation=0, color=(50, 50, 50, 230)):
+        # 车辆是一个特殊的矩形障碍物
+        super().__init__(x, y, length, width, orientation, color)
+        self.length = length
+        self.width = width
+        self.orientation = orientation
+        self.window_color = (150, 150, 150, 180)
+        self.highlight_color = (200, 200, 200, 200)
+
+        # 传感器配置
+        self.sensors = {
+            'fisheye_cameras': [],  # 环视摄像头 (黄色)
+            'front_camera': None,   # 前视摄像头 (红色)
+            'ultrasonic': [],       # 超声波雷达 (紫色)
+            'imu': None,            # 消费级IMU (绿色)
+            'gps': None             # 消费级GPS (绿色)
+        }
+
+        # 初始化传感器位置
+        self._init_sensors()
+
+    def _init_sensors(self):
+        """初始化传感器位置"""
+        half_length = self.length / 2
+        half_width = self.width / 2
+
+        # 环视摄像头 (4个，黄色)
+        # 车头/车尾各2个，左/右后视镜各1个
+        fisheye_positions = [
+            (half_length, 0),           # 车头中央
+            (-half_length, 0),          # 车尾中央
+            (0, half_width),            # 右侧中央
+            (0, -half_width)            # 左侧中央
+        ]
+
+        for pos in fisheye_positions:
+            self.sensors['fisheye_cameras'].append({
+                'local_pos': pos,
+                'color': (255, 255, 0)  # 黄色
+            })
+
+        # 前视摄像头 (1个，红色)
+        # 前挡风玻璃
+        self.sensors['front_camera'] = {
+            'local_pos': (half_length * 0.5, 0),
+            'color': (255, 0, 0)  # 红色
+        }
+
+        # 超声波雷达 (12个，紫色)
+        # 车前保4个(短距)，车后保4个(短距)，车眉处4个(长距)
+        ultrasonic_positions = []
+
+        # 前保险杠 (4个)
+        front_spacing = half_width / 2
+        for i in range(4):
+            x = half_length
+            y = -half_width + i * front_spacing
+            ultrasonic_positions.append((x, y))
+
+        # 后保险杠 (4个)
+        rear_spacing = half_width / 2
+        for i in range(4):
+            x = -half_length
+            y = -half_width + i * rear_spacing
+            ultrasonic_positions.append((x, y))
+
+        # 侧面 (4个)
+        side_spacing = half_length / 2
+        for i in range(2):
+            # 左侧
+            x = -half_length + i * side_spacing * 2
+            y = -half_width
+            ultrasonic_positions.append((x, y))
+
+            # 右侧
+            x = -half_length + i * side_spacing * 2
+            y = half_width
+            ultrasonic_positions.append((x, y))
+
+        for pos in ultrasonic_positions:
+            self.sensors['ultrasonic'].append({
+                'local_pos': pos,
+                'color': (128, 0, 128)  # 紫色
+            })
+
+        # 消费级IMU (1个，绿色)
+        # 推荐嵌入摄像头
+        self.sensors['imu'] = {
+            'local_pos': (0, 0),
+            'color': (0, 128, 0)  # 绿色
+        }
+
+        # 消费级GPS (1个，绿色)
+        self.sensors['gps'] = {
+            'local_pos': (0, half_width * 0.5),
+            'color': (0, 200, 0)  # 浅绿色
+        }
+
+    def get_corners(self):
+        """获取车辆四个角的坐标"""
+        # 计算车辆四个角的局部坐标
+        half_length = self.length / 2
+        half_width = self.width / 2
+
+        # 局部坐标系中的四个角
+        corners_local = [
+            (-half_length, -half_width),  # 左下
+            (half_length, -half_width),   # 右下
+            (half_length, half_width),    # 右上
+            (-half_length, half_width)    # 左上
+        ]
+
+        # 将局部坐标转换为全局坐标
+        angle_rad = math.radians(self.orientation)
+        corners_global = []
+
+        for x_local, y_local in corners_local:
+            # 旋转
+            x_rotated = x_local * \
+                math.cos(angle_rad) - y_local * math.sin(angle_rad)
+            y_rotated = x_local * \
+                math.sin(angle_rad) + y_local * math.cos(angle_rad)
+
+            # 平移
+            x_global = x_rotated + self.x
+            y_global = y_rotated + self.y
+
+            corners_global.append((x_global, y_global))
+
+        return corners_global
+
+    def get_sensor_positions(self):
+        """获取传感器的全局坐标位置"""
+        cos_h = math.cos(self.orientation)
+        sin_h = math.sin(self.orientation)
+
+        sensor_positions = {
+            'fisheye_cameras': [],
+            'front_camera': None,
+            'ultrasonic': [],
+            'imu': None,
+            'gps': None
+        }
+
+        # 环视摄像头
+        for camera in self.sensors['fisheye_cameras']:
+            lx, ly = camera['local_pos']
+            x = self.x + lx * cos_h - ly * sin_h
+            y = self.y + lx * sin_h + ly * cos_h
+            sensor_positions['fisheye_cameras'].append({
+                'pos': (x, y),
+                'color': camera['color']
+            })
+
+        # 前视摄像头
+        if self.sensors['front_camera']:
+            lx, ly = self.sensors['front_camera']['local_pos']
+            x = self.x + lx * cos_h - ly * sin_h
+            y = self.y + lx * sin_h + ly * cos_h
+            sensor_positions['front_camera'] = {
+                'pos': (x, y),
+                'color': self.sensors['front_camera']['color']
+            }
+
+        # 超声波雷达
+        for sensor in self.sensors['ultrasonic']:
+            lx, ly = sensor['local_pos']
+            x = self.x + lx * cos_h - ly * sin_h
+            y = self.y + lx * sin_h + ly * cos_h
+            sensor_positions['ultrasonic'].append({
+                'pos': (x, y),
+                'color': sensor['color']
+            })
+
+        # IMU
+        if self.sensors['imu']:
+            lx, ly = self.sensors['imu']['local_pos']
+            x = self.x + lx * cos_h - ly * sin_h
+            y = self.y + lx * sin_h + ly * cos_h
+            sensor_positions['imu'] = {
+                'pos': (x, y),
+                'color': self.sensors['imu']['color']
+            }
+
+        # GPS
+        if self.sensors['gps']:
+            lx, ly = self.sensors['gps']['local_pos']
+            x = self.x + lx * cos_h - ly * sin_h
+            y = self.y + lx * sin_h + ly * cos_h
+            sensor_positions['gps'] = {
+                'pos': (x, y),
+                'color': self.sensors['gps']['color']
+            }
+
+        return sensor_positions
