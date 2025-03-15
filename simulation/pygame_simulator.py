@@ -452,13 +452,21 @@ class PathFollower:
 
         参数:
             lookahead: 前瞻距离(米)
-            control_method: 控制方法('default', 'pid', 'mpc', 'lqr')
+            control_method: 控制方法('default', 'pid', 'mpc', 'lqr', 'parking')
         """
         self.path = []
         self.lookahead = lookahead
         self.current_target_idx = 0
         self.control_method = control_method
         self.target_speed = 5.0  # 目标速度(m/s)
+
+        # 泊车相关参数
+        self.parking_phase = 'approach'  # 泊车阶段：approach, reverse, adjust
+        self.parking_type = None  # 停车类型：parallel, perpendicular
+        self.reverse_gear = False  # 是否处于倒车状态
+        self.min_parking_speed = 1.0  # 最小泊车速度(m/s)
+        self.max_parking_speed = 2.0  # 最大泊车速度(m/s)
+        self.safe_distance = 0.5  # 安全距离(m)
 
         # PID控制参数
         self.pid_params = {
@@ -501,7 +509,7 @@ class PathFollower:
 
     def set_control_method(self, method):
         """设置控制方法"""
-        if method in ['default', 'pid', 'mpc', 'lqr']:
+        if method in ['default', 'pid', 'mpc', 'lqr', 'parking']:
             self.control_method = method
         else:
             print(f"不支持的控制方法: {method}，使用默认方法")
@@ -512,7 +520,9 @@ class PathFollower:
         if not self.path:
             return 0.0, 0.0, 0.0  # 无路径时不动作
 
-        if self.control_method == 'pid':
+        if self.control_method == 'parking':
+            return self._parking_control(vehicle)
+        elif self.control_method == 'pid':
             return self._pid_control(vehicle)
         elif self.control_method == 'mpc':
             return self._mpc_control(vehicle)
@@ -830,6 +840,312 @@ class PathFollower:
             throttle *= 0.5
 
         return throttle, brake, steer
+
+    def _parking_control(self, vehicle):
+        """泊车专用控制方法"""
+        if not self.path or not self.parking_type:
+            return 0.0, 0.0, 0.0
+
+        # 获取目标点
+        target_idx = self._find_target_point(vehicle)
+        if target_idx >= len(self.path):
+            return 0.0, 0.0, 0.0
+
+        tx, ty = self.path[target_idx]
+
+        # 计算到目标点的距离和角度
+        dx = tx - vehicle.x
+        dy = ty - vehicle.y
+        distance = math.sqrt(dx*dx + dy*dy)
+
+        # 计算目标航向角（根据路径的下一个点）
+        next_idx = min(target_idx + 1, len(self.path) - 1)
+        next_x, next_y = self.path[next_idx]
+        path_heading = math.atan2(next_y - ty, next_x - tx)
+
+        # 计算航向误差
+        heading_error = path_heading - vehicle.heading
+        # 规范化到 [-π, π]
+        while heading_error > math.pi:
+            heading_error -= 2 * math.pi
+        while heading_error < -math.pi:
+            heading_error += 2 * math.pi
+
+        # 计算预瞄点 - 根据当前阶段和速度动态调整预瞄距离
+        preview_distance = 0.0
+        if self.parking_phase == 'approach':
+            # 接近阶段使用较远的预瞄点
+            preview_distance = max(2.0, min(5.0, vehicle.speed * 1.0))
+        elif self.parking_phase == 'reverse':
+            # 倒车阶段使用较近的预瞄点
+            preview_distance = max(1.0, min(3.0, abs(vehicle.speed) * 0.8))
+        else:  # adjust phase
+            # 微调阶段使用非常近的预瞄点
+            preview_distance = max(0.5, min(1.5, abs(vehicle.speed) * 0.5))
+
+        # 寻找预瞄点
+        preview_idx = target_idx
+        preview_distance_sum = 0.0
+        for i in range(target_idx, len(self.path) - 1):
+            segment_length = math.sqrt(
+                (self.path[i+1][0] - self.path[i][0])**2 +
+                (self.path[i+1][1] - self.path[i][1])**2
+            )
+            preview_distance_sum += segment_length
+            if preview_distance_sum >= preview_distance:
+                preview_idx = i + 1
+                break
+
+        # 获取预瞄点坐标
+        preview_x, preview_y = self.path[preview_idx]
+
+        # 计算预瞄点相对于车辆的位置（车辆坐标系）
+        dx_local = (preview_x - vehicle.x) * math.cos(vehicle.heading) + \
+            (preview_y - vehicle.y) * math.sin(vehicle.heading)
+        dy_local = -(preview_x - vehicle.x) * math.sin(vehicle.heading) + \
+            (preview_y - vehicle.y) * math.cos(vehicle.heading)
+
+        # 计算到预瞄点的距离
+        preview_distance_actual = math.sqrt(dx_local**2 + dy_local**2)
+
+        # 计算预瞄角度
+        preview_angle = math.atan2(dy_local, dx_local)
+
+        # 根据泊车阶段决定控制策略
+        if self.parking_phase == 'approach':
+            # 接近阶段：缓慢前进到泊车起始点
+            if distance < 1.0:  # 到达泊车起始点
+                self.parking_phase = 'reverse'
+                self.reverse_gear = True
+                return 0.0, 0.3, 0.0  # 轻踩刹车准备倒车
+
+            # 横向控制 - 使用PID控制器
+            # 计算横向误差
+            lateral_error = dy_local
+
+            # 更新PID控制器状态
+            self.steer_error_sum = max(-3.0, min(3.0,
+                                       self.steer_error_sum + lateral_error))
+            steer_error_diff = lateral_error - self.steer_error_prev
+            self.steer_error_prev = lateral_error
+
+            # 计算PID控制输出
+            steer = (self.pid_params['kp_steer'] * lateral_error +
+                     self.pid_params['ki_steer'] * self.steer_error_sum +
+                     self.pid_params['kd_steer'] * steer_error_diff)
+
+            # 限制在 [-1, 1] 范围内
+            steer = max(-1.0, min(1.0, steer))
+
+            # 纵向控制 - 使用LQR控制器
+            # 根据距离和预瞄点计算目标速度
+            speed_factor = min(1.0, distance / 5.0)
+            target_speed = self.min_parking_speed + speed_factor * \
+                (self.max_parking_speed - self.min_parking_speed)
+
+            # 计算速度误差
+            speed_error = target_speed - vehicle.speed
+
+            # 使用LQR参数计算加速度命令
+            accel_cmd = self.lqr_params['q_speed'] * \
+                speed_error / self.lqr_params['r_accel']
+
+            # 将加速度命令转换为油门和刹车
+            if accel_cmd >= 0:
+                throttle = min(0.5, accel_cmd)  # 限制最大油门
+                brake = 0.0
+            else:
+                throttle = 0.0
+                brake = min(0.3, -accel_cmd)  # 限制最大刹车
+
+            # 如果转向角大，减速
+            if abs(steer) > 0.5:
+                throttle *= 0.5
+
+            return throttle, brake, steer
+
+        elif self.parking_phase == 'reverse':
+            # 倒车入库阶段
+
+            # 横向控制 - 使用PID控制器
+            # 计算横向误差 - 倒车时需要反向
+            lateral_error = -dy_local  # 倒车时横向误差取反
+
+            # 更新PID控制器状态
+            self.steer_error_sum = max(-3.0, min(3.0,
+                                       self.steer_error_sum + lateral_error))
+            steer_error_diff = lateral_error - self.steer_error_prev
+            self.steer_error_prev = lateral_error
+
+            # 计算PID控制输出
+            steer = (self.pid_params['kp_steer'] * lateral_error +
+                     self.pid_params['ki_steer'] * self.steer_error_sum +
+                     self.pid_params['kd_steer'] * steer_error_diff)
+
+            # 限制在 [-1, 1] 范围内
+            steer = max(-1.0, min(1.0, steer))
+
+            # 根据停车类型调整转向策略
+            if self.parking_type == 'parallel':
+                # 侧方停车：需要先倒车转向，然后回正
+                if abs(heading_error) > math.pi/6:  # 如果航向偏差大，优先调整航向
+                    # 增加转向力度
+                    steer = max(-1.0, min(1.0, steer * 1.5))
+
+            # 如果接近目标点，进入微调阶段
+            if distance < 1.0:
+                self.parking_phase = 'adjust'
+                self.reverse_gear = False
+                return 0.0, 0.3, 0.0
+
+            # 纵向控制 - 使用LQR控制器
+            # 倒车速度控制 - 使用较小的目标速度
+            target_speed = -self.min_parking_speed * 0.8  # 负值表示倒车
+
+            # 计算速度误差
+            speed_error = target_speed - vehicle.speed
+
+            # 使用LQR参数计算加速度命令
+            accel_cmd = self.lqr_params['q_speed'] * \
+                speed_error / self.lqr_params['r_accel']
+
+            # 倒车时油门和刹车的处理方式不同
+            if self.reverse_gear:
+                if accel_cmd <= 0:  # 需要减速或保持当前倒车速度
+                    throttle = min(0.3, -accel_cmd)  # 倒车时，负的加速度命令对应油门
+                    brake = 0.0
+                else:  # 需要减小倒车速度
+                    throttle = 0.0
+                    brake = min(0.3, accel_cmd)  # 倒车时，正的加速度命令对应刹车
+            else:
+                throttle = 0.0
+                brake = 0.3  # 如果不是倒车状态但在倒车阶段，使用刹车
+
+            # 如果转向角大，减小倒车速度
+            if abs(steer) > 0.5:
+                throttle *= 0.7
+
+            return throttle, brake, steer
+
+        else:  # adjust phase
+            # 微调阶段：精确调整到目标位置
+            if distance < self.safe_distance:
+                return 0.0, 0.3, 0.0  # 停车
+
+            # 横向控制 - 使用PID控制器
+            # 计算横向误差
+            lateral_error = dy_local
+            if self.reverse_gear:
+                lateral_error = -lateral_error  # 倒车时横向误差取反
+
+            # 更新PID控制器状态
+            self.steer_error_sum = max(-3.0, min(3.0,
+                                       self.steer_error_sum + lateral_error))
+            steer_error_diff = lateral_error - self.steer_error_prev
+            self.steer_error_prev = lateral_error
+
+            # 计算PID控制输出 - 微调阶段使用较小的增益
+            steer = (0.5 * self.pid_params['kp_steer'] * lateral_error +
+                     0.3 * self.pid_params['ki_steer'] * self.steer_error_sum +
+                     0.7 * self.pid_params['kd_steer'] * steer_error_diff)
+
+            # 限制在 [-0.5, 0.5] 范围内，微调阶段使用较小的转向角
+            steer = max(-0.5, min(0.5, steer))
+
+            # 计算纵向误差
+            longitudinal_error = dx_local
+            if self.reverse_gear:
+                longitudinal_error = -longitudinal_error  # 倒车时纵向误差取反
+
+            # 根据纵向误差决定前进还是倒车
+            self.reverse_gear = longitudinal_error < 0
+
+            # 纵向控制 - 使用LQR控制器
+            # 根据距离计算目标速度
+            speed_factor = min(1.0, distance / 2.0)
+            target_speed = 0.5 * self.min_parking_speed * speed_factor
+            if self.reverse_gear:
+                target_speed = -target_speed  # 倒车时目标速度为负
+
+            # 计算速度误差
+            speed_error = target_speed - vehicle.speed
+
+            # 使用LQR参数计算加速度命令
+            accel_cmd = self.lqr_params['q_speed'] * \
+                speed_error / self.lqr_params['r_accel']
+
+            # 将加速度命令转换为油门和刹车
+            if self.reverse_gear:
+                if accel_cmd <= 0:  # 需要加大倒车速度
+                    throttle = min(0.2, -accel_cmd)
+                    brake = 0.0
+                else:  # 需要减小倒车速度
+                    throttle = 0.0
+                    brake = min(0.2, accel_cmd)
+            else:
+                if accel_cmd >= 0:  # 需要加速
+                    throttle = min(0.2, accel_cmd)
+                    brake = 0.0
+                else:  # 需要减速
+                    throttle = 0.0
+                    brake = min(0.2, -accel_cmd)
+
+            return throttle, brake, steer
+
+    def _find_target_point(self, vehicle):
+        """寻找合适的目标点"""
+        # 动态调整前瞻距离 - 根据车速和泊车阶段调整
+        if self.parking_phase == 'approach':
+            dynamic_lookahead = max(
+                3.0, min(self.lookahead, vehicle.speed * 0.8))
+        elif self.parking_phase == 'reverse':
+            dynamic_lookahead = max(2.0, min(4.0, vehicle.speed * 0.6))
+        else:  # adjust phase
+            dynamic_lookahead = max(1.0, min(2.0, vehicle.speed * 0.5))
+
+        # 寻找目标点
+        target_idx = self.current_target_idx
+        min_dist = float('inf')
+        closest_idx = target_idx
+
+        # 首先找到最近点
+        for i in range(self.current_target_idx, min(self.current_target_idx + 30, len(self.path))):
+            if i >= len(self.path):
+                break
+
+            tx, ty = self.path[i]
+            dist = math.sqrt((tx - vehicle.x)**2 + (ty - vehicle.y)**2)
+
+            if dist < min_dist:
+                min_dist = dist
+                closest_idx = i
+
+        # 从最近点开始，找到前瞻距离范围内的目标点
+        target_idx = closest_idx
+        for i in range(closest_idx, len(self.path)):
+            tx, ty = self.path[i]
+            dist = math.sqrt((tx - vehicle.x)**2 + (ty - vehicle.y)**2)
+
+            if dist > dynamic_lookahead:
+                target_idx = i
+                break
+
+        # 确保目标点不会超出路径范围
+        target_idx = min(target_idx, len(self.path) - 1)
+
+        # 更新当前目标点索引，但不要后退
+        self.current_target_idx = max(self.current_target_idx, closest_idx)
+
+        return target_idx
+
+    def set_parking_type(self, parking_type):
+        """设置停车类型"""
+        if parking_type in ['parallel', 'perpendicular']:
+            self.parking_type = parking_type
+            self.parking_phase = 'approach'
+            self.reverse_gear = False
+            return True
+        return False
 
 
 class ParkingEnvironment(Environment):
@@ -1315,7 +1631,8 @@ class PygameSimulator:
         self.config = self._load_config(config_input)
 
         # 初始化pygame
-        pygame.init()
+        if not pygame.get_init():
+            pygame.init()
 
         # 设置窗口尺寸和比例
         self.scale = self.config.get('scale', 5)  # 像素/米
@@ -1339,6 +1656,7 @@ class PygameSimulator:
             length=vehicle_config.get('length', 4.5),
             width=vehicle_config.get('width', 1.8)
         )
+
         # 更新车辆参数
         self.vehicle.wheel_base = vehicle_config.get('wheel_base', 2.7)
         self.vehicle.max_speed = vehicle_config.get('max_speed', 5.0)
@@ -1355,10 +1673,12 @@ class PygameSimulator:
         # 仿真状态
         self.running = False
         self.paused = False
-        self.collision_detected = False  # 添加碰撞状态标志
+        self.collision_detected = False
+        self.status_text = ""
+        self.status_color = (0, 0, 0)
 
         # 控制方法
-        self.control_methods = ["default", "pid", "mpc", "lqr"]
+        self.control_methods = ["default", "pid", "mpc", "lqr", "parking"]
         self.current_control_method = self.config.get(
             'control_method', 'default')
 
@@ -1372,12 +1692,22 @@ class PygameSimulator:
             'steer_angle': [],
             'acceleration': []
         }
-        self.start_time = None
 
-        # 初始化消息显示
-        self.message = ""
-        self.message_time = 0
-        self.message_duration = 3  # 消息显示时间（秒）
+        # 坐标转换参数
+        self.offset_x = self.width / 2
+        self.offset_y = self.height / 2
+
+        # 添加按键提示信息
+        self.key_hints = [
+            "R: 重置车辆",
+            "C: 切换控制方法",
+            "P: 切换规划算法",
+            "S: 切换转向模式",
+            "空格: 暂停/继续",
+            "右键: 选择目标点"
+        ]
+        self.hint_color = (50, 50, 50)  # 深灰色
+        self.hint_font_size = 20
 
     def _load_config(self, config_input: Optional[Union[str, Dict]]) -> Dict:
         """加载配置文件或配置字典"""
@@ -1389,7 +1719,7 @@ class PygameSimulator:
             'fps': 60,
             'dt': 0.05,  # 仿真时间步长(秒)
             'lookahead': 5.0,  # 路径跟踪前瞻距离
-            'control_method': 'default',  # 控制方法: default, pid, mpc, lqr
+            'control_method': 'default',  # 控制方法: default, pid, mpc, lqr, parking
             'vehicle': {
                 'length': 4.5,
                 'width': 1.8,
@@ -1729,7 +2059,7 @@ class PygameSimulator:
         self.screen.blit(control_surface, (10, 10))
 
         # 绘制车辆信息
-        speed_text = f"速度: {self.vehicle.v:.2f} m/s"
+        speed_text = f"速度: {self.vehicle.speed:.2f} m/s"
         speed_surface = font.render(speed_text, True, BLACK)
         self.screen.blit(speed_surface, (10, 40))
 
@@ -2069,3 +2399,131 @@ class PygameSimulator:
         """断开连接（兼容接口）"""
         if pygame.get_init():
             pygame.quit()
+
+    def _draw_status_text(self):
+        """绘制状态文本"""
+        try:
+            font = get_font(24)
+            if font and self.status_text:
+                text_surface = font.render(
+                    self.status_text, True, self.status_color)
+                text_rect = text_surface.get_rect()
+                text_rect.centerx = self.screen.get_rect().centerx
+                text_rect.top = 10
+                self.screen.blit(text_surface, text_rect)
+        except Exception as e:
+            print(f"字体渲染错误: {e}")
+
+    def _handle_events(self):
+        """处理事件"""
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                self.running = False
+                return False
+
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    self.running = False
+                    return False
+                elif event.key == pygame.K_SPACE:
+                    self.paused = not self.paused
+                elif event.key == pygame.K_r:  # 重置
+                    self._reset_simulation()
+                    return True
+                elif event.key == pygame.K_c:  # 切换控制方法
+                    self._switch_control_method()
+                    return True
+                elif event.key == pygame.K_p:  # 切换规划算法
+                    if hasattr(self, '_switch_planning_algorithm'):
+                        self._switch_planning_algorithm()
+                    return True
+                elif event.key == pygame.K_s:  # 切换转向模式
+                    if hasattr(self.vehicle, 'set_steering_mode'):
+                        self._switch_steering_mode()
+                    return True
+
+        return True
+
+    def _reset_simulation(self):
+        """重置仿真"""
+        if hasattr(self, '_reset_vehicle'):
+            self._reset_vehicle()
+        self.paused = False
+        self.collision_detected = False
+        self.status_text = "仿真已重置"
+        self.status_color = (0, 128, 0)
+
+    def _switch_control_method(self):
+        """切换控制方法"""
+        try:
+            current_index = self.control_methods.index(
+                self.current_control_method)
+            next_index = (current_index + 1) % len(self.control_methods)
+            self.current_control_method = self.control_methods[next_index]
+            self.follower.set_control_method(self.current_control_method)
+            self.status_text = f"已切换到{self.current_control_method}控制方法"
+            self.status_color = (0, 128, 0)
+        except ValueError:
+            self.current_control_method = "default"
+            self.follower.set_control_method("default")
+            self.status_text = "已重置为默认控制方法"
+            self.status_color = (255, 165, 0)
+
+    def _draw_hints(self):
+        """绘制按键提示信息"""
+        try:
+            font = get_font(self.hint_font_size)
+            if not font:
+                return
+
+            # 计算所有提示的总宽度
+            total_width = 0
+            surfaces = []
+            for hint in self.key_hints:
+                surface = font.render(hint, True, self.hint_color)
+                surfaces.append(surface)
+                total_width += surface.get_width() + 20  # 20像素的间距
+
+            # 计算起始x坐标，使提示居中
+            start_x = (self.width - total_width) / 2
+            current_x = start_x
+
+            # 在底部绘制提示，留出20像素的边距
+            y = self.height - self.hint_font_size - 20
+
+            # 绘制每个提示，用竖线分隔
+            for i, surface in enumerate(surfaces):
+                self.screen.blit(surface, (current_x, y))
+                current_x += surface.get_width()
+
+                # 如果不是最后一个提示，添加分隔符
+                if i < len(surfaces) - 1:
+                    separator = font.render("|", True, self.hint_color)
+                    current_x += 10  # 分隔符前的间距
+                    self.screen.blit(separator, (current_x, y))
+                    current_x += 10  # 分隔符后的间距
+
+        except Exception as e:
+            print(f"提示信息渲染错误: {e}")
+
+    def draw(self):
+        """绘制场景"""
+        # 清空屏幕
+        self.screen.fill((255, 255, 255))
+
+        # 绘制环境
+        if self.environment is not None:
+            self._draw_environment()
+
+        # 绘制车辆
+        if hasattr(self, 'vehicle'):
+            self._draw_vehicle(self.screen, self.vehicle)
+
+        # 绘制状态文本
+        self._draw_status_text()
+
+        # 绘制按键提示
+        self._draw_hints()
+
+        # 更新显示
+        pygame.display.flip()
