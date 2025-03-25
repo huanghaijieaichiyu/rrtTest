@@ -1370,7 +1370,8 @@ class PygameSimulator:
             'heading': [],
             'speed': [],
             'steer_angle': [],
-            'acceleration': []
+            'acceleration': [],
+            'path': []
         }
         self.start_time = None
 
@@ -2055,6 +2056,13 @@ class PygameSimulator:
             axs[2, 0].set_xlabel('时间 (s)')
             axs[2, 0].set_ylabel('加速度 (m/s²)')
             axs[2, 0].grid(True)
+
+            # 绘制不同规划算法的路径
+            axs[2, 1].plot(results['position_x'], results['position_y'])
+            axs[2, 1].set_title('车辆轨迹')
+            axs[2, 1].set_xlabel('X 位置 (m)')
+            axs[2, 1].set_ylabel('Y 位置 (m)')
+            axs[2, 1].grid(True)
 
             # 保留一个空白区域
             axs[2, 1].axis('off')

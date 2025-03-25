@@ -1,7 +1,9 @@
 import numpy as np
 import random
 import argparse
+import pygame
 import yaml
+import traceback
 from typing import List, Tuple, Dict, Any, Optional
 from rrt.astar import AStar
 from simulation.environment import Environment
@@ -14,7 +16,7 @@ from rrt.theta_star import ThetaStar
 from simulation.pygame_simulator import ParkingEnvironment, PathFollower, PygameSimulator, VehicleModel
 from simulation.pygame_simulator import check_vehicle_collision, check_path_collision
 import math
-import pygame
+from rrt.attention_dqn_rrt import AttentionDQNRRT
 
 
 # 加载配置文件
@@ -441,8 +443,12 @@ def create_parking_scenario(use_random_scene=False, config=None):
 
 def get_algorithm_specific_params(algorithm: str, args, ) -> Dict[str, Any]:
     """获取算法特定的参数"""
+    # 确保max_iterations始终是整数
+    max_iterations = int(
+        args.iterations) if args.iterations is not None else 10000
+
     base_params = {
-        'max_iterations': args.iterations if args.iterations is not None else 10000,
+        'max_iterations': max_iterations,
         'step_size': args.step_size if args.step_size is not None else 2.0
     }
 
@@ -454,7 +460,17 @@ def get_algorithm_specific_params(algorithm: str, args, ) -> Dict[str, Any]:
         'timed_rrt': {**base_params, 'robot_speed': args.robot_speed},
         'dijkstra': {'resolution': 1.0, 'diagonal_movement': True},
         'dstar_lite': {'resolution': 1.0, 'diagonal_movement': True},
-        'theta_star': {'resolution': 1.0, 'diagonal_movement': True}
+        'theta_star': {'resolution': 1.0, 'diagonal_movement': True},
+        'attention_dqn_rrt': {
+            **base_params,
+            'rewire_factor': 1.5,
+            'learning_rate': 0.001,
+            'gamma': 0.99,
+            'epsilon': 0.1,
+            'buffer_capacity': 10000,
+            'batch_size': 64,
+            'hidden_dim': 128
+        }
     }
 
     return params.get(algorithm, {})
@@ -487,7 +503,8 @@ def create_planner(algorithm: str, start: tuple, goal: tuple, env: Environment,
         'timed_rrt': TimedRRTStar,
         'dijkstra': Dijkstra,
         'dstar_lite': DStarLite,
-        'theta_star': ThetaStar
+        'theta_star': ThetaStar,
+        'attention_dqn_rrt': AttentionDQNRRT
     }
 
     if algorithm not in planners:
@@ -629,14 +646,91 @@ def check_path_feasibility(
         print("路径规划测试失败：无法找到可行路径")
         return False
 
-    # 检查路径是否与障碍物碰撞
+    # 增强的碰撞检测 - 使用多个包络线进行更细致的检测
+    # 1. 使用标准车辆模型进行基本碰撞检测
     collision_info = check_path_collision(
-        path, env, vehicle_length, vehicle_width)
+        path, env, vehicle_length, vehicle_width, steps=20)  # 增加采样点数量
+
     if collision_info['collision']:
         print("路径规划测试失败：路径与障碍物碰撞")
         return False
 
-    # 验证路径连续性
+    # 2. 使用不同朝向的车辆模型进行额外检测
+    # 在路径的关键点处进行更细致的检测
+    critical_points = []
+
+    # 添加起点和终点
+    critical_points.append((0, path[0]))
+    critical_points.append((len(path)-1, path[-1]))
+
+    # 添加转弯点（路径方向变化较大的点）
+    for i in range(1, len(path)-1):
+        prev_vec = (path[i][0] - path[i-1][0], path[i][1] - path[i-1][1])
+        next_vec = (path[i+1][0] - path[i][0], path[i+1][1] - path[i][1])
+
+        # 计算两个向量的夹角
+        dot_product = prev_vec[0] * next_vec[0] + prev_vec[1] * next_vec[1]
+        prev_mag = math.sqrt(prev_vec[0]**2 + prev_vec[1]**2)
+        next_mag = math.sqrt(next_vec[0]**2 + next_vec[1]**2)
+
+        if prev_mag * next_mag > 0:  # 避免除以零
+            cos_angle = dot_product / (prev_mag * next_mag)
+            cos_angle = max(-1.0, min(1.0, cos_angle))  # 确保在[-1, 1]范围内
+            angle = math.acos(cos_angle)
+
+            # 如果角度变化大于15度，认为是转弯点
+            if angle > math.radians(15):
+                critical_points.append((i, path[i]))
+
+    # 在关键点处进行多角度碰撞检测
+    for idx, point in critical_points:
+        # 确定车辆朝向
+        if idx == 0:  # 起点
+            if len(path) > 1:
+                dx = path[1][0] - path[0][0]
+                dy = path[1][1] - path[0][1]
+                heading = math.atan2(dy, dx)
+            else:
+                heading = 0  # 默认朝向
+        elif idx == len(path) - 1:  # 终点
+            dx = path[-1][0] - path[-2][0]
+            dy = path[-1][1] - path[-2][1]
+            heading = math.atan2(dy, dx)
+        else:  # 中间点
+            # 使用前后点的方向平均值
+            dx1 = path[idx][0] - path[idx-1][0]
+            dy1 = path[idx][1] - path[idx-1][1]
+            dx2 = path[idx+1][0] - path[idx][0]
+            dy2 = path[idx+1][1] - path[idx][1]
+            heading1 = math.atan2(dy1, dx1)
+            heading2 = math.atan2(dy2, dx2)
+            heading = (heading1 + heading2) / 2
+
+        # 创建临时车辆模型
+        temp_vehicle = VehicleModel(
+            point[0], point[1], heading, vehicle_length, vehicle_width)
+
+        # 基本碰撞检测
+        collision = check_vehicle_collision(temp_vehicle, env)
+        if collision['collision']:
+            print(f"路径规划测试失败：在关键点 {idx} 处检测到碰撞")
+            return False
+
+        # 额外检测 - 在不同转向角度下检测
+        for steer_angle in [-0.3, -0.15, 0.15, 0.3]:  # 约±17°和±8.5°
+            # 模拟车辆在该点以不同转向角行驶
+            temp_vehicle.front_steer_angle = steer_angle
+            # 更新车轮位置
+            temp_vehicle.get_wheel_positions()
+
+            # 检测碰撞
+            collision = check_vehicle_collision(temp_vehicle, env)
+            if collision['collision']:
+                print(
+                    f"路径规划测试失败：在关键点 {idx} 处以转向角 {math.degrees(steer_angle):.1f}° 检测到碰撞")
+                return False
+
+    # 3. 验证路径连续性
     for i in range(len(path)-1):
         p1 = path[i]
         p2 = path[i+1]
@@ -645,428 +739,290 @@ def check_path_feasibility(
             print(f"路径规划测试失败：路径不连续，在点 {i} 和 {i+1} 之间的距离为 {dist}")
             return False
 
+    # 4. 验证路径曲率是否满足车辆转向约束
+    # 创建一个临时车辆模型来获取最大转向角和轴距
+    temp_vehicle = VehicleModel(0, 0, 0, vehicle_length, vehicle_width)
+    max_steer_angle = temp_vehicle.max_steer  # 使用车辆模型的最大转向角
+    wheelbase = temp_vehicle.wheelbase  # 使用车辆模型的轴距
+    max_curvature = math.tan(max_steer_angle) / wheelbase
+
+    for i in range(1, len(path)-1):
+        # 计算路径曲率
+        x1, y1 = path[i-1]
+        x2, y2 = path[i]
+        x3, y3 = path[i+1]
+
+        # 使用三点法估计曲率
+        # 首先计算三点确定的圆的半径
+        # 参考: https://en.wikipedia.org/wiki/Circumscribed_circle#Cartesian_coordinates_2
+
+        # 避免共线点导致的除零错误
+        if abs((y2-y1)*(x3-x2) - (y3-y2)*(x2-x1)) < 1e-6:
+            continue  # 三点共线，曲率为0
+
+        # 计算三角形的边长
+        a = math.sqrt((x2-x3)**2 + (y2-y3)**2)
+        b = math.sqrt((x1-x3)**2 + (y1-y3)**2)
+        c = math.sqrt((x1-x2)**2 + (y1-y2)**2)
+
+        # 计算半周长
+        s = (a + b + c) / 2
+
+        # 计算三角形面积
+        area = math.sqrt(s*(s-a)*(s-b)*(s-c))
+
+        # 计算外接圆半径
+        if area < 1e-6:
+            continue  # 面积太小，可能是三点几乎共线
+
+        radius = (a*b*c) / (4*area)
+
+        # 曲率 = 1/半径
+        curvature = 1 / radius if radius > 0 else 0
+
+        # 检查曲率是否超过车辆能力
+        if curvature > max_curvature * 1.1:  # 允许10%的误差
+            print(
+                f"路径规划测试失败：路径曲率在点 {i} 处过大 ({curvature:.4f} > {max_curvature:.4f})")
+            return False
+
     return True
 
 
-def main():
-    """主函数：创建场景、规划路径并仿真"""
-    # 解析命令行参数
-    args = parse_args()
-
-    # 加载配置文件
-    config = load_config(args.config)
-
-    # 命令行参数覆盖配置文件
-    if args.algorithm is not None:
-        config['path_planning']['default_algorithm'] = args.algorithm
-    if args.iterations is not None:
-        for alg in config['path_planning']['algorithms']:
-            config['path_planning']['algorithms'][alg]['max_iterations'] = args.iterations
-    if args.step_size is not None:
-        for alg in config['path_planning']['algorithms']:
-            if 'step_size' in config['path_planning']['algorithms'][alg]:
-                config['path_planning']['algorithms'][alg]['step_size'] = args.step_size
-    if args.robot_speed is not None:
-        config['path_planning']['algorithms']['timed_rrt']['robot_speed'] = args.robot_speed
-    if args.control_method is not None:
-        config['control']['default_method'] = args.control_method
-
-    # 创建场景
-    env, start, goal, goal_orientation = create_parking_scenario(
-        use_random_scene=args.random_scene,
-        config=config
-    )
-
-    # 创建仿真器并设置环境
-    simulator = PygameSimulator({
-        'window_width': config['window']['width'],
-        'window_height': config['window']['height'],
-        'window_title': config['window']['title'],
-        'scale': config['simulation']['scale'],
-        'fps': config['simulation']['fps'],
-        'dt': config['simulation']['dt'],
-        'lookahead': config['simulation']['lookahead'],
-        'vehicle': {
-            'length': config['vehicle']['length'],
-            'width': config['vehicle']['width'],
-            'wheelbase': config['vehicle']['wheelbase']
-        }
-    })
-    simulator.set_environment(env)
-
-    # 启动交互式规划
-    interactive_planning(simulator, env, start, args)
-
-
 def interactive_planning(simulator, env, start, args):
-    """交互式路径规划
+    """交互式路径规划"""
+    # 确保 pygame 已初始化
+    if not pygame.get_init():
+        pygame.init()
+    if not pygame.display.get_init():
+        pygame.display.init()
 
-    参数:
-        simulator: 仿真器对象
-        env: 环境对象
-        start: 起点坐标
-        args: 命令行参数
-    """
-    import pygame
+    # 初始化变量
+    goal = None
+    path = None
+    running = True
+    results = None
 
-    # 初始化pygame
-    pygame.init()
+    try:
+        # 加载配置文件
+        config = load_config(args.config)
 
-    # 设置窗口大小为1080p
-    screen_width = 860
-    screen_height = 640
-    screen = pygame.display.set_mode((screen_width, screen_height))
-    pygame.display.set_caption(
-        "停车场路径规划 - 右键选择未占用停车位，T重选，R重置，E切换算法，S切换转向模式，C切换控制方法")
+        # 从配置文件中获取窗口尺寸
+        screen_width = config['window']['width']
+        screen_height = config['window']['height']
 
-    # 计算缩放比例
-    scale_x = screen_width / env.width
-    scale_y = screen_height / env.height
-    scale = min(scale_x, scale_y) * 0.9
+        # 设置显示模式
+        screen = pygame.display.set_mode((screen_width, screen_height))
+        if not screen:
+            raise RuntimeError("无法创建pygame显示窗口")
 
-    # 计算偏移量（使场景居中）
-    offset_x = (screen_width - env.width * scale) / 2
-    offset_y = (screen_height - env.height * scale) / 2
+        pygame.display.set_caption(
+            "停车场路径规划 - 右键选择未占用停车位，T重选，R重置，E切换算法，S切换转向模式，C切换控制方法")
 
-    # 获取支持中文的字体
-    def get_font(size=24):
-        """获取支持中文的字体"""
-        # 尝试加载系统字体
-        system_fonts = [
-            # Windows 字体
-            "SimHei",  # 黑体
-            "Microsoft YaHei",  # 微软雅黑
-            "SimSun",  # 宋体
-            # Linux 字体
-            "WenQuanYi Micro Hei",  # 文泉驿微米黑
-            "Noto Sans CJK SC",  # Google Noto 字体
-            "Droid Sans Fallback",  # Android 默认字体
-            # macOS 字体
-            "PingFang SC",  # 苹方
-            "STHeiti"  # 华文黑体
-        ]
+        # 从配置文件中获取缩放比例
+        scale = config['simulation']['scale']
 
-        # 尝试按优先级加载字体
-        for font_name in system_fonts:
-            try:
-                return pygame.font.SysFont(font_name, size)
-            except Exception:
-                continue
+        # 计算偏移量（使场景居中）
+        offset_x = (screen_width - env.width * scale) / 2
+        offset_y = (screen_height - env.height * scale) / 2
 
-        # 如果都失败了，使用默认字体
-        return pygame.font.Font(None, size)
-
-    # 初始化车辆模型和路径跟踪器
-    vehicle = VehicleModel(start[0], start[1], math.pi * 3 / 2)  # 朝下
-    follower = PathFollower(lookahead=5.0, control_method=args.control_method)
-
-    # 仿真参数
-    simulating = False
-    simulation_speed = 2.0  # 仿真速度倍率
-    dt = 0.05  # 时间步长
-    collision_detected = False  # 碰撞检测标志
-    collision_info = None  # 碰撞详细信息
-
-    # 状态文本
-    status_text = "等待选择目标点"
-    status_color = (0, 0, 0)  # 黑色
-
-    # 控制方法列表
-    control_methods = ["default", "pid", "mpc", "lqr"]
-    current_control_method = args.control_method if args.control_method else "default"
-
-    # 重置车辆位置到起点
-    def reset_vehicle():
-        nonlocal simulating, collision_detected, collision_info, status_text, status_color
-        vehicle.x, vehicle.y = start
-        vehicle.heading = math.pi * 3 / 2  # 朝下
-        vehicle.speed = 0.0
-        vehicle.trajectory = [start]
-        simulating = False
-        collision_detected = False
-        collision_info = None
-        status_text = "车辆已重置到起点"
-        status_color = (0, 128, 0)  # 绿色
-        print("车辆已重置到起点")
-
-    # 模拟车辆沿路径移动
-    def simulate_path():
-        nonlocal simulating, collision_detected, collision_info, status_text, status_color
-
-        # 如果已经检测到碰撞，不再继续仿真
-        if collision_detected:
-            return
-
-        # 计算控制输入
-        throttle, brake, steer = follower.get_control(vehicle)
-
-        # 更新车辆状态
-        vehicle.update(throttle, brake, steer, dt * simulation_speed)
-
-        # 检查碰撞和安全边界
-        collision_info = check_vehicle_collision(vehicle, env)
-        if collision_info['collision']:
-            collision_detected = True
-            simulating = False
-            status_text = "检测到碰撞：与障碍物相撞！按R键重置车辆位置"
-            status_color = (255, 0, 0)  # 红色
-            print(f"检测到碰撞！位置: {collision_info['position']}")
-            return
-        elif collision_info['safety_warning']:
-            status_text = "警告：进入安全边界区域"
-            status_color = (255, 165, 0)  # 橙色
-            print(f"安全警告！位置: {collision_info['position']}")
-
-        # 检查是否到达终点
-        if goal:  # 添加检查以避免None错误
-            # 计算到目标点的距离和朝向差异
-            dx = goal[0] - vehicle.x
-            dy = goal[1] - vehicle.y
-            distance_to_goal = math.sqrt(dx*dx + dy*dy)
-
-            # 如果车辆已经非常接近目标点且速度很小，认为已到达
-            if distance_to_goal < 0.5 and vehicle.speed < 0.1:  # 距离阈值0.5米，速度阈值0.1m/s
-                simulating = False
-                status_text = "到达目标点！按T键重新选择目标点"
-                status_color = (0, 255, 0)  # 绿色
-                print("车辆已到达目标点")
-
-    # 绘制车辆
-    def draw_vehicle():
-        # 获取车辆四个角的坐标
-        corners = vehicle.get_corners()
-
-        # 转换到屏幕坐标
-        screen_corners = []
-        for x, y in corners:
-            sx = x * scale + offset_x
-            sy = y * scale + offset_y
-            screen_corners.append((int(sx), int(sy)))
-
-        # 根据状态设置不同颜色
-        if collision_detected:
-            car_color = (255, 0, 0)  # 红色表示碰撞
-        elif collision_info and collision_info.get('safety_warning'):
-            car_color = (255, 165, 0)  # 橙色表示安全警告
-        else:
-            car_color = (0, 128, 0)  # 绿色表示正常
-
-        # 绘制车身
-        pygame.draw.polygon(screen, car_color, screen_corners)
-
-        # 绘制车窗 (内部区域)
-        window_inset = 0.2  # 车窗内缩比例
-        half_length = vehicle.length / 2 * (1 - window_inset)
-        half_width = vehicle.width / 2 * (1 - window_inset)
-
-        # 车窗在车身坐标系中的位置
-        window_local = [
-            (half_length, half_width),   # 右前
-            (half_length, -half_width),  # 左前
-            (-half_length, -half_width),  # 左后
-            (-half_length, half_width)   # 右后
-        ]
-
-        # 转换到世界坐标系，再转换到屏幕坐标系
-        cos_h = math.cos(vehicle.heading)
-        sin_h = math.sin(vehicle.heading)
-
-        window_screen = []
-        for lx, ly in window_local:
-            wx = vehicle.x + lx * cos_h - ly * sin_h
-            wy = vehicle.y + lx * sin_h + ly * cos_h
-            sx = wx * scale + offset_x
-            sy = wy * scale + offset_y
-            window_screen.append((int(sx), int(sy)))
-
-        # 绘制车窗 (深蓝色半透明)
-        pygame.draw.polygon(screen, (30, 30, 80, 180), window_screen)
-
-        # 获取车轮位置和角度
-        wheels = vehicle.get_wheel_positions()
-
-        # 绘制车轮
-        for wheel_x, wheel_y, wheel_angle in wheels:
-            # 计算车轮的四个角
-            wheel_half_length = vehicle.wheel_length / 2
-            wheel_half_width = vehicle.wheel_width / 2
-
-            # 车轮在自身坐标系中的四个角
-            wheel_corners_local = [
-                (wheel_half_length, wheel_half_width),   # 右前
-                (wheel_half_length, -wheel_half_width),  # 左前
-                (-wheel_half_length, -wheel_half_width),  # 左后
-                (-wheel_half_length, wheel_half_width)   # 右后
+        # 获取支持中文的字体
+        def get_font(size=24):
+            """获取支持中文的字体"""
+            # 尝试加载系统字体
+            system_fonts = [
+                # Windows 字体
+                "SimHei",  # 黑体
+                "Microsoft YaHei",  # 微软雅黑
+                "SimSun",  # 宋体
+                # Linux 字体
+                "WenQuanYi Micro Hei",  # 文泉驿微米黑
+                "Noto Sans CJK SC",  # Google Noto 字体
+                "Droid Sans Fallback",  # Android 默认字体
+                # macOS 字体
+                "PingFang SC",  # 苹方
+                "STHeiti"  # 华文黑体
             ]
 
-            # 转换到世界坐标系，考虑车轮自身的转向角
-            cos_w = math.cos(wheel_angle)
-            sin_w = math.sin(wheel_angle)
+            # 尝试按优先级加载字体
+            for font_name in system_fonts:
+                try:
+                    return pygame.font.SysFont(font_name, size)
+                except Exception:
+                    continue
 
-            wheel_corners_screen = []
-            for lx, ly in wheel_corners_local:
-                wx = wheel_x + lx * cos_w - ly * sin_w
-                wy = wheel_y + lx * sin_w + ly * cos_w
-                sx = wx * scale + offset_x
-                sy = wy * scale + offset_y
-                wheel_corners_screen.append((int(sx), int(sy)))
+            # 如果都失败了，使用默认字体
+            return pygame.font.Font(None, size)
 
-            # 绘制车轮 (黑色)
-            pygame.draw.polygon(screen, (20, 20, 20), wheel_corners_screen)
+        # 初始化车辆模型
+        vehicle = VehicleModel(start[0], start[1], math.pi * 3 / 2)  # 朝下
 
-            # 绘制车轮中心点 (轮毂)
-            hub_x = int(wheel_x * scale + offset_x)
-            hub_y = int(wheel_y * scale + offset_y)
-            pygame.draw.circle(screen, (150, 150, 150), (hub_x, hub_y), 2)
+        # 从配置文件获取仿真参数
+        simulating = False
+        simulation_speed = config['simulation'].get(
+            'simulation_speed', 2.0)  # 仿真速度倍率
+        dt = config['simulation'].get('dt', 0.05)  # 时间步长
+        collision_detected = False  # 碰撞检测标志
+        collision_info = None  # 碰撞详细信息
 
-        # 绘制车头方向
-        head_x = vehicle.x + math.cos(vehicle.heading) * vehicle.length / 2
-        head_y = vehicle.y + math.sin(vehicle.heading) * vehicle.length / 2
-        center_screen = (int(vehicle.x * scale + offset_x),
-                         int(vehicle.y * scale + offset_y))
-        head_screen = (int(head_x * scale + offset_x),
-                       int(head_y * scale + offset_y))
-        pygame.draw.line(screen, (0, 0, 255), center_screen, head_screen, 2)
+        # 状态文本
+        status_text = "等待选择目标点"
+        status_color = (0, 0, 0)  # 黑色
 
-        # 绘制车灯
-        light_radius = vehicle.width * 0.1
-        light_offset_y = vehicle.width * 0.3
+        # 控制方法列表
+        control_methods = ["default", "pid", "mpc", "lqr"]
+        current_control_method = args.control_method if args.control_method else "default"
 
-        # 前灯位置 (黄色)
-        front_light_local = [
-            (vehicle.length/2 - light_radius, light_offset_y),  # 右前灯
-            (vehicle.length/2 - light_radius, -light_offset_y)  # 左前灯
-        ]
+        # 保存simulator的原始属性
+        original_width = simulator.width
+        original_height = simulator.height
+        original_scale = simulator.scale
+        original_vehicle = simulator.vehicle
+        original_follower = simulator.follower
+        original_environment = simulator.environment
+        original_dt = simulator.config.get('dt', 0.05)
+        original_fps = simulator.config.get('fps', 60)
 
-        for lx, ly in front_light_local:
-            wx = vehicle.x + lx * cos_h - ly * sin_h
-            wy = vehicle.y + lx * sin_h + ly * cos_h
-            sx = int(wx * scale + offset_x)
-            sy = int(wy * scale + offset_y)
-            pygame.draw.circle(screen, (255, 255, 0),
-                               (sx, sy), int(light_radius * scale))
+        # 更新simulator属性以适应当前场景
+        simulator.width = screen_width
+        simulator.height = screen_height
+        simulator.scale = scale
+        simulator.screen = screen
+        simulator.environment = env
+        simulator.vehicle = vehicle
+        simulator.follower = PathFollower(
+            lookahead=config['simulation'].get('lookahead', 5.0), control_method=current_control_method)
+        simulator.config['dt'] = dt
+        simulator.config['fps'] = config['simulation'].get('fps', 60)
 
-        # 后灯位置 (红色)
-        rear_light_local = [
-            (-vehicle.length/2 + light_radius, light_offset_y),  # 右后灯
-            (-vehicle.length/2 + light_radius, -light_offset_y)  # 左后灯
-        ]
+        # 坐标转换函数（屏幕坐标 -> 环境坐标）
+        def screen_to_env(pos):
+            print(f"屏幕坐标: {pos}, 偏移: ({offset_x}, {offset_y}), 缩放: {scale}")
+            x = (pos[0] - offset_x) / scale
+            y = (pos[1] - offset_y) / scale
+            env_pos = (x, y)
+            print(f"转换后的环境坐标: {env_pos}")
+            return env_pos
 
-        for lx, ly in rear_light_local:
-            wx = vehicle.x + lx * cos_h - ly * sin_h
-            wy = vehicle.y + lx * sin_h + ly * cos_h
-            sx = int(wx * scale + offset_x)
-            sy = int(wy * scale + offset_y)
-            pygame.draw.circle(screen, (255, 0, 0), (sx, sy),
-                               int(light_radius * scale))
+        # 环境坐标转屏幕坐标
+        def env_to_screen(pos):
+            x = pos[0] * scale + offset_x
+            y = pos[1] * scale + offset_y
+            screen_pos = (int(x), int(y))
+            return screen_pos
 
-        # 仅当show_sensors为True时绘制传感器
-        if vehicle.show_sensors:
-            # 绘制传感器
-            sensor_positions = vehicle.get_sensor_positions()
+        # 重置车辆位置到起点
+        def reset_vehicle():
+            nonlocal simulating, collision_detected, collision_info, status_text, status_color
+            vehicle.x, vehicle.y = start
+            vehicle.heading = math.pi * 3 / 2  # 朝下
+            vehicle.speed = 0.0
+            vehicle.trajectory = [start]
+            simulating = False
+            collision_detected = False
+            collision_info = None
+            status_text = "车辆已重置到起点"
+            status_color = (0, 128, 0)  # 绿色
+            print("车辆已重置到起点")
 
-            # 绘制环视摄像头 (黄色)
-            for camera in sensor_positions['fisheye_cameras']:
-                pos = camera['pos']
-                color = camera['color']
-                sx = int(pos[0] * scale + offset_x)
-                sy = int(pos[1] * scale + offset_y)
-                pygame.draw.circle(screen, color, (sx, sy), 5)
-                # 绘制摄像头视野范围指示
-                pygame.draw.circle(screen, color, (sx, sy), 15, 1)
+        # 模拟车辆沿路径移动
+        def simulate_path():
+            nonlocal simulating, collision_detected, collision_info, status_text, status_color
 
-            # 绘制前视摄像头 (红色)
-            if sensor_positions['front_camera']:
-                pos = sensor_positions['front_camera']['pos']
-                color = sensor_positions['front_camera']['color']
-                sx = int(pos[0] * scale + offset_x)
-                sy = int(pos[1] * scale + offset_y)
-                pygame.draw.circle(screen, color, (sx, sy), 4)
-                # 绘制摄像头视野范围
-                view_length = vehicle.length * 0.8
-                view_x = pos[0] + math.cos(vehicle.heading) * view_length
-                view_y = pos[1] + math.sin(vehicle.heading) * view_length
-                view_sx = int(view_x * scale + offset_x)
-                view_sy = int(view_y * scale + offset_y)
-                pygame.draw.line(screen, color, (sx, sy),
-                                 (view_sx, view_sy), 1)
+            # 如果已经检测到碰撞，不再继续仿真
+            if collision_detected:
+                return
 
-            # 绘制超声波雷达 (紫色)
-            for sensor in sensor_positions['ultrasonic']:
-                pos = sensor['pos']
-                color = sensor['color']
-                sx = int(pos[0] * scale + offset_x)
-                sy = int(pos[1] * scale + offset_y)
-                # 绘制超声波雷达点
-                pygame.draw.circle(screen, color, (sx, sy), 3)
+            # 计算控制输入
+            throttle, brake, steer = simulator.follower.get_control(vehicle)
 
-                # 计算超声波雷达方向 - 从车辆中心指向传感器
-                sensor_angle = math.atan2(
-                    pos[1] - vehicle.y, pos[0] - vehicle.x)
-                # 绘制超声波雷达探测范围
-                range_length = 1.0  # 探测范围1米
-                range_x = pos[0] + math.cos(sensor_angle) * range_length
-                range_y = pos[1] + math.sin(sensor_angle) * range_length
-                range_sx = int(range_x * scale + offset_x)
-                range_sy = int(range_y * scale + offset_y)
-                pygame.draw.line(screen, color, (sx, sy),
-                                 (range_sx, range_sy), 1)
+            # 更新车辆状态
+            vehicle.update(throttle, brake, steer, dt * simulation_speed)
 
-            # 绘制IMU (绿色)
-            if sensor_positions['imu']:
-                pos = sensor_positions['imu']['pos']
-                color = sensor_positions['imu']['color']
-                sx = int(pos[0] * scale + offset_x)
-                sy = int(pos[1] * scale + offset_y)
-                # 绘制IMU为一个小方块
-                imu_size = 4
-                pygame.draw.rect(screen, color, (sx - imu_size //
-                                 2, sy - imu_size//2, imu_size, imu_size))
+            # 检查碰撞和安全边界
+            collision_info = check_vehicle_collision(vehicle, env)
+            if collision_info['collision']:
+                collision_detected = True
+                simulating = False
+                status_text = "检测到碰撞：与障碍物相撞！按R键重置车辆位置"
+                status_color = (255, 0, 0)  # 红色
+                print(f"检测到碰撞！位置: {collision_info['position']}")
+                return
+            elif collision_info['safety_warning']:
+                status_text = "警告：进入安全边界区域"
+                status_color = (255, 165, 0)  # 橙色
+                print(f"安全警告！位置: {collision_info['position']}")
 
-            # 绘制GPS (浅绿色)
-            if sensor_positions['gps']:
-                pos = sensor_positions['gps']['pos']
-                color = sensor_positions['gps']['color']
-                sx = int(pos[0] * scale + offset_x)
-                sy = int(pos[1] * scale + offset_y)
-                # 绘制GPS为一个十字形
-                cross_size = 5
-                pygame.draw.line(
-                    screen, color, (sx - cross_size, sy), (sx + cross_size, sy), 2)
-                pygame.draw.line(
-                    screen, color, (sx, sy - cross_size), (sx, sy + cross_size), 2)
+            # 检查是否到达终点
+            if goal:  # 添加检查以避免None错误
+                # 计算到目标点的距离和朝向差异
+                dx = goal[0] - vehicle.x
+                dy = goal[1] - vehicle.y
+                distance_to_goal = math.sqrt(dx*dx + dy*dy)
 
-    # 绘制函数
-    def draw_scene():
-        screen.fill((255, 255, 255))  # 白色背景
+                # 如果车辆已经非常接近目标点且速度很小，认为已到达
+                if distance_to_goal < 0.5 and vehicle.speed < 0.1:  # 距离阈值0.5米，速度阈值0.1m/s
+                    simulating = False
+                    status_text = "到达目标点！按T键重新选择目标点"
+                    status_color = (0, 255, 0)  # 绿色
+                    print("车辆已到达目标点")
 
-        # 绘制障碍物
-        for obs in env.obstacles:
-            # 转换坐标
-            x = obs.x * scale + offset_x
-            y = obs.y * scale + offset_y
-            width = obs.width * scale
-            height = obs.height * scale
+        # 绘制场景
+        def draw_scene():
+            screen.fill((255, 255, 255))  # 白色背景
 
-            # 获取填充和线宽属性
-            is_filled = getattr(obs, 'is_filled', True)
-            line_width = getattr(obs, 'line_width', 1)
+            # 使用自定义绘制函数绘制环境，而不是使用simulator的方法
+            # 这样可以确保使用正确的坐标系统和偏移量
+            for obs in env.obstacles:
+                # 转换坐标
+                x = obs.x * scale + offset_x
+                y = obs.y * scale + offset_y
+                width = obs.width * scale
+                height = obs.height * scale
 
-            # 检查是否是停车位，使用特殊颜色显示
-            if hasattr(obs, 'is_parking_spot') and obs.is_parking_spot:
-                # 根据占用状态设置颜色
-                color = (255, 0, 0, 150) if obs.occupied else (
-                    0, 255, 0, 150)  # 红色表示占用，绿色表示空闲
+                # 获取填充和线宽属性
+                is_filled = getattr(obs, 'is_filled', True)
+                line_width = getattr(obs, 'line_width', 1)
 
+                # 检查是否是停车位，使用特殊颜色显示
+                if hasattr(obs, 'is_parking_spot') and obs.is_parking_spot:
+                    # 根据占用状态设置颜色
+                    color = (255, 0, 0, 150) if obs.occupied else (
+                        0, 255, 0, 150)  # 红色表示占用，绿色表示空闲
+
+                    if obs.type == "rectangle":
+                        # 创建旋转后的矩形
+                        rect = pygame.Rect(0, 0, width, height)
+                        surface = pygame.Surface(
+                            (width, height), pygame.SRCALPHA)
+
+                        # 绘制边框和填充
+                        if is_filled:
+                            pygame.draw.rect(surface, color, rect)
+                        pygame.draw.rect(surface, color, rect, 3)  # 加粗边框
+
+                        # 旋转并绘制
+                        if hasattr(obs, 'angle') and obs.angle != 0:
+                            rotated_surface = pygame.transform.rotate(
+                                surface, -obs.angle)
+                            screen.blit(rotated_surface,
+                                        rotated_surface.get_rect(center=(x, y)))
+                        else:
+                            screen.blit(surface, pygame.Rect(
+                                x - width/2, y - height/2, width, height))
+                    continue
+
+                # 绘制其他障碍物
                 if obs.type == "rectangle":
                     # 创建旋转后的矩形
                     rect = pygame.Rect(0, 0, width, height)
                     surface = pygame.Surface((width, height), pygame.SRCALPHA)
 
-                    # 绘制边框和填充
+                    # 绘制矩形
                     if is_filled:
-                        pygame.draw.rect(surface, color, rect)
-                    pygame.draw.rect(surface, color, rect, 3)  # 加粗边框
+                        pygame.draw.rect(surface, obs.color, rect)
+                    else:
+                        pygame.draw.rect(surface, obs.color, rect, line_width)
 
                     # 旋转并绘制
                     if hasattr(obs, 'angle') and obs.angle != 0:
@@ -1077,328 +1033,510 @@ def interactive_planning(simulator, env, start, args):
                     else:
                         screen.blit(surface, pygame.Rect(
                             x - width/2, y - height/2, width, height))
-                continue
-
-            # 绘制其他障碍物
-            if obs.type == "rectangle":
-                # 创建旋转后的矩形
-                rect = pygame.Rect(0, 0, width, height)
-                surface = pygame.Surface((width, height), pygame.SRCALPHA)
-
-                # 绘制矩形
-                if is_filled:
-                    pygame.draw.rect(surface, obs.color, rect)
-                else:
-                    pygame.draw.rect(surface, obs.color, rect, line_width)
-
-                # 旋转并绘制
-                if hasattr(obs, 'angle') and obs.angle != 0:
-                    rotated_surface = pygame.transform.rotate(
-                        surface, -obs.angle)
-                    screen.blit(rotated_surface,
-                                rotated_surface.get_rect(center=(x, y)))
-                else:
-                    screen.blit(surface, pygame.Rect(
-                        x - width/2, y - height/2, width, height))
-            elif obs.type == "circle":
-                if is_filled:
-                    pygame.draw.circle(screen, obs.color,
-                                       (int(x), int(y)), int(width/2))
-                else:
-                    pygame.draw.circle(screen, obs.color,
-                                       (int(x), int(y)), int(width/2), line_width)
-
-        # 绘制起点
-        start_x = start[0] * scale + offset_x
-        start_y = start[1] * scale + offset_y
-        pygame.draw.circle(screen, (0, 255, 0),
-                           (int(start_x), int(start_y)), 10)
-
-        # 如果有目标点，绘制目标点
-        if goal:
-            goal_x = goal[0] * scale + offset_x
-            goal_y = goal[1] * scale + offset_y
-            pygame.draw.circle(screen, (255, 0, 0),
-                               (int(goal_x), int(goal_y)), 10)
-
-        # 如果有路径，绘制路径
-        if path:
-            for i in range(len(path) - 1):
-                p1_x = path[i][0] * scale + offset_x
-                p1_y = path[i][1] * scale + offset_y
-                p2_x = path[i+1][0] * scale + offset_x
-                p2_y = path[i+1][1] * scale + offset_y
-                pygame.draw.line(screen, (0, 0, 255),
-                                 (int(p1_x), int(p1_y)),
-                                 (int(p2_x), int(p2_y)), 3)
-
-        # 绘制车辆轨迹
-        if len(vehicle.trajectory) > 1:
-            for i in range(len(vehicle.trajectory) - 1):
-                p1_x = vehicle.trajectory[i][0] * scale + offset_x
-                p1_y = vehicle.trajectory[i][1] * scale + offset_y
-                p2_x = vehicle.trajectory[i+1][0] * scale + offset_x
-                p2_y = vehicle.trajectory[i+1][1] * scale + offset_y
-                pygame.draw.line(screen, (0, 200, 0),
-                                 (int(p1_x), int(p1_y)),
-                                 (int(p2_x), int(p2_y)), 2)
-
-        # 绘制车辆
-        draw_vehicle()
-
-        # 创建半透明背景
-        info_surface = pygame.Surface((300, screen_height), pygame.SRCALPHA)
-        info_surface.fill((255, 255, 255, 180))  # 白色半透明背景
-        screen.blit(info_surface, (screen_width - 310, 0))
-
-        # 显示提示信息
-        font = get_font(20)  # 稍微减小字体大小
-
-        # 显示状态文本
-        status_surface = font.render(status_text, True, status_color)
-        screen.blit(status_surface, (screen_width // 2 - status_surface.get_width() // 2,
-                                     screen_height - 30))
-
-        # 创建所有文本
-        texts = [
-            ("右键点击选择未占用的停车位作为目标点", (0, 0, 0)),
-            ("按T键重新选择目标点", (0, 0, 0)),
-            (f"当前算法: {args.algorithm}", (0, 0, 0)),
-            (f"控制方法: {current_control_method}", (0, 0, 0)),
-            (f"转向模式: {vehicle.steering_mode}", (0, 0, 0)),
-            ("按E键切换规划算法", (0, 0, 0)),
-            ("按C键切换控制方法", (0, 0, 0)),
-            ("按S键切换转向模式", (0, 0, 0)),
-            ("按R键重置车辆位置", (0, 0, 0)),
-            ("碰撞检测: " + ("已触发" if collision_detected else "正常"),
-             (255, 0, 0) if collision_detected else (0, 0, 0)),
-            ("绿色边框表示可选择的未占用停车位", (0, 150, 0))
-        ]
-
-        # 在右侧显示文本
-        y_offset = 20
-        x_pos = screen_width - 300
-        for text, color in texts:
-            text_surface = font.render(text, True, color)
-            screen.blit(text_surface, (x_pos, y_offset))
-            y_offset += 30
-
-        # 如果发生碰撞，显示碰撞信息
-        if collision_detected and collision_info:
-            collision_text = "碰撞类型: 障碍物碰撞"
-            text_surface = font.render(collision_text, True, (255, 0, 0))
-            screen.blit(text_surface, (x_pos, y_offset))
-
-        pygame.display.flip()
-
-    # 坐标转换函数（屏幕坐标 -> 环境坐标）
-    def screen_to_env(pos):
-        x = (pos[0] - offset_x) / scale
-        y = (pos[1] - offset_y) / scale
-        return (x, y)
-
-    # 规划路径函数
-    def plan_path_to_goal():
-        if not goal:
-            return None
-
-        print(
-            f"\n使用 {args.algorithm} 算法规划从 {vehicle.x, vehicle.y} 到 {goal} 的路径...")
-        planner = create_planner(
-            args.algorithm, (vehicle.x, vehicle.y), goal, env, args, vehicle.width, vehicle.length)
-        path = try_plan_path(planner)
-
-        # 如果找到路径，检查路径是否有碰撞
-        if path:
-            collision_points = check_path_collision(
-                path, env, vehicle.length, vehicle.width)
-            if collision_points['collision']:
-                print("警告：规划的路径存在碰撞")
-                # 这里可以选择是否继续使用这条路径
-                # 如果需要重新规划，可以返回 None
-
-        return path
-
-    # 初始化变量
-    goal = None
-    path = None
-    running = True
-    clock = pygame.time.Clock()
-
-    # 主循环
-    while running:
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                running = False
-
-            # 鼠标右键点击选择目标点
-            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 3 and not simulating:
-                goal = screen_to_env(event.pos)
-                print(f"选择目标点: {goal}")
-                status_text = "正在规划路径..."
-                status_color = (0, 0, 0)  # 黑色
-                draw_scene()  # 立即更新显示
-
-                # 检查目标点是否在未占用的停车位内
-                parking_spot = env.find_parking_spot(goal)
-                if parking_spot:
-                    # 将目标点设置为停车位中心
-                    goal = (parking_spot.x, parking_spot.y)
-                    print(f"已选择停车位，目标点调整为: {goal}")
-
-                    # 规划路径
-                    path = plan_path_to_goal()
-                    if not path:
-                        print("无法规划到该目标点的路径，请重新选择")
-                        goal = None
-                        status_text = "无法规划路径，请重新选择目标点"
-                        status_color = (255, 0, 0)  # 红色
+                elif obs.type == "circle":
+                    if is_filled:
+                        pygame.draw.circle(screen, obs.color,
+                                           (int(x), int(y)), int(width/2))
                     else:
-                        # 设置路径并开始仿真
-                        follower.set_path(path)
-                        simulating = True
+                        pygame.draw.circle(screen, obs.color,
+                                           (int(x), int(y)), int(width/2), line_width)
+
+            # 绘制起点
+            start_screen = env_to_screen(start)
+            pygame.draw.circle(screen, (0, 255, 0), start_screen, 10)
+
+            # 如果有目标点，绘制目标点
+            if goal:
+                goal_screen = env_to_screen(goal)
+                pygame.draw.circle(screen, (255, 0, 0), goal_screen, 10)
+
+            # 如果有路径，绘制路径
+            if path:
+                # 手动绘制路径，确保使用正确的坐标系统
+                for i in range(len(path) - 1):
+                    p1_screen = env_to_screen(path[i])
+                    p2_screen = env_to_screen(path[i+1])
+                    pygame.draw.line(screen, (0, 0, 255),
+                                     p1_screen, p2_screen, 3)
+
+            # 绘制车辆轨迹
+            if len(vehicle.trajectory) > 1:
+                # 手动绘制轨迹，确保使用正确的坐标系统
+                for i in range(len(vehicle.trajectory) - 1):
+                    p1_screen = env_to_screen(vehicle.trajectory[i])
+                    p2_screen = env_to_screen(vehicle.trajectory[i+1])
+                    pygame.draw.line(screen, (0, 200, 0),
+                                     p1_screen, p2_screen, 2)
+
+            # 绘制车辆 - 根据碰撞状态设置颜色
+            car_color = (255, 0, 0) if collision_detected else \
+                (255, 165, 0) if collision_info and collision_info.get('safety_warning') else \
+                (0, 128, 0)  # 红色表示碰撞，橙色表示警告，绿色表示正常
+            simulator._draw_vehicle(screen, vehicle, scale,
+                                    offset_x, offset_y, car_color)
+
+            # 创建半透明背景
+            info_surface = pygame.Surface(
+                (300, screen_height), pygame.SRCALPHA)
+            info_surface.fill((255, 255, 255, 180))  # 白色半透明背景
+            screen.blit(info_surface, (screen_width - 310, 0))
+
+            # 显示提示信息
+            font = get_font(20)  # 稍微减小字体大小
+
+            # 显示状态文本
+            status_surface = font.render(status_text, True, status_color)
+            screen.blit(status_surface, (screen_width // 2 - status_surface.get_width() // 2,
+                                         screen_height - 30))
+
+            # 创建所有文本
+            texts = [
+                ("右键点击选择未占用的停车位作为目标点", (0, 0, 0)),
+                ("按T键重新选择目标点", (0, 0, 0)),
+                (f"当前算法: {args.algorithm}", (0, 0, 0)),
+                (f"控制方法: {current_control_method}", (0, 0, 0)),
+                (f"转向模式: {vehicle.steering_mode}", (0, 0, 0)),
+                ("按E键切换规划算法", (0, 0, 0)),
+                ("按C键切换控制方法", (0, 0, 0)),
+                ("按S键切换转向模式", (0, 0, 0)),
+                ("按R键重置车辆位置", (0, 0, 0)),
+                ("碰撞检测: " + ("已触发" if collision_detected else "正常"),
+                 (255, 0, 0) if collision_detected else (0, 0, 0)),
+                ("绿色边框表示可选择的未占用停车位", (0, 150, 0))
+            ]
+
+            # 在右侧显示文本
+            y_offset = 20
+            x_pos = screen_width - 300
+            for text, color in texts:
+                text_surface = font.render(text, True, color)
+                screen.blit(text_surface, (x_pos, y_offset))
+                y_offset += 30
+
+            # 如果发生碰撞，显示碰撞信息
+            if collision_detected and collision_info:
+                collision_text = "碰撞类型: 障碍物碰撞"
+                text_surface = font.render(collision_text, True, (255, 0, 0))
+                screen.blit(text_surface, (x_pos, y_offset))
+
+            # 显示车辆状态信息
+            if simulating:
+                vehicle_info = [
+                    f"速度: {vehicle.speed:.2f} m/s",
+                    f"加速度: {vehicle.acceleration:.2f} m/s²",
+                    f"转向角: {math.degrees(vehicle.front_steer_angle):.1f}°",
+                    f"位置: ({vehicle.x:.1f}, {vehicle.y:.1f})"
+                ]
+
+                y_offset += 40
+                for info in vehicle_info:
+                    info_surface = font.render(info, True, (0, 0, 150))
+                    screen.blit(info_surface, (x_pos, y_offset))
+                    y_offset += 25
+
+            pygame.display.flip()
+
+        # 规划路径函数
+        def plan_path_to_goal():
+            if not goal:
+                return None
+
+            print(
+                f"\n使用 {args.algorithm} 算法规划从 {vehicle.x, vehicle.y} 到 {goal} 的路径...")
+            planner = create_planner(
+                args.algorithm, (vehicle.x, vehicle.y), goal, env, args, vehicle.width, vehicle.length)
+            path = try_plan_path(planner)
+
+            # 如果找到路径，检查路径是否有碰撞
+            if path:
+                collision_points = check_path_collision(
+                    path, env, vehicle.length, vehicle.width)
+                if collision_points['collision']:
+                    print("警告：规划的路径存在碰撞")
+                    # 这里可以选择是否继续使用这条路径
+                    # 如果需要重新规划，可以返回 None
+
+            return path
+
+        # 主循环
+        clock = pygame.time.Clock()
+
+        while running:
+            try:
+                # 处理pygame事件
+                for event in pygame.event.get():
+                    if event.type == pygame.QUIT:
+                        running = False
+
+                    # 调试打印鼠标事件信息
+                    elif event.type == pygame.MOUSEBUTTONDOWN:
+                        button_name = "左键" if event.button == 1 else "右键" if event.button == 3 else f"按钮{event.button}"
+                        print(f"检测到鼠标{button_name}点击事件，位置: {event.pos}")
+
+                        # 鼠标右键点击选择目标点 - 注意系统差异，有些系统可能用不同的button值
+                        # 通常右键是3，但有些系统可能是2或其他值
+                        if (event.button == 3 or event.button == 2) and not simulating:
+                            goal = screen_to_env(event.pos)
+                            print(f"选择目标点: {goal}")
+                            status_text = "正在规划路径..."
+                            status_color = (0, 0, 0)  # 黑色
+
+                            # 立即更新显示，给用户反馈
+                            draw_scene()
+                            pygame.display.flip()
+
+                            # 检查目标点是否在未占用的停车位内
+                            try:
+                                # 鼠标右键在某些系统可能是不同的按钮值
+                                parking_spot = env.find_parking_spot(goal)
+                                if parking_spot is None:
+                                    print(f"在位置 {goal} 没有找到未占用的停车位")
+                                    # 查看一下当前环境中的停车位状态
+                                    parking_spots_count = 0
+                                    available_spots = 0
+                                    for obs in env.obstacles:
+                                        if hasattr(obs, 'is_parking_spot') and obs.is_parking_spot:
+                                            parking_spots_count += 1
+                                            if not obs.occupied:
+                                                available_spots += 1
+                                    print(
+                                        f"当前环境中共有 {parking_spots_count} 个停车位，其中 {available_spots} 个未占用")
+                                else:
+                                    print(
+                                        f"找到停车位: ({parking_spot.x}, {parking_spot.y})")
+                            except Exception as e:
+                                print(f"查找停车位时出错: {e}")
+                                traceback.print_exc()
+                                parking_spot = None
+
+                            if parking_spot:
+                                # 将目标点设置为停车位中心
+                                goal = (parking_spot.x, parking_spot.y)
+                                print(f"已选择停车位，目标点调整为: {goal}")
+
+                                # 规划路径
+                                path = plan_path_to_goal()
+                                if not path:
+                                    print("无法规划到该目标点的路径，请重新选择")
+                                    goal = None
+                                    status_text = "无法规划路径，请重新选择目标点"
+                                    status_color = (255, 0, 0)  # 红色
+                                else:
+                                    # 设置路径并开始仿真
+                                    simulator.follower.set_path(path)
+                                    simulating = True
+                                    collision_detected = False
+                                    collision_info = None
+                                    status_text = "正在仿真..."
+                                    status_color = (0, 0, 255)  # 蓝色
+                            else:
+                                # 即使没有选择停车位，也允许直接选择位置作为目标
+                                print(f"目标点不在未占用的停车位内，但仍尝试规划路径到 {goal}")
+                                path = plan_path_to_goal()
+                                if path:
+                                    simulator.follower.set_path(path)
+                                    simulating = True
+                                    collision_detected = False
+                                    collision_info = None
+                                    status_text = "正在仿真..."
+                                    status_color = (0, 0, 255)  # 蓝色
+                                else:
+                                    print("无法规划到该目标点的路径，请重新选择")
+                                    goal = None
+                                    status_text = "无法规划路径，请重新选择目标点"
+                                    status_color = (255, 0, 0)  # 红色
+
+                    # 按T键重新选择目标点
+                    elif event.type == pygame.KEYDOWN and event.key == pygame.K_t:
+                        goal = None
+                        path = None
+                        simulating = False
                         collision_detected = False
                         collision_info = None
-                        status_text = "正在仿真..."
+                        # 重置车辆位置
+                        vehicle.x, vehicle.y = start
+                        vehicle.heading = math.pi * 3 / 2  # 朝下
+                        vehicle.speed = 0.0
+                        vehicle.trajectory = [start]
+                        status_text = "等待选择目标点"
+                        status_color = (0, 0, 0)  # 黑色
+                        print("重新选择目标点")
+
+                    # 按R键重置车辆位置
+                    elif event.type == pygame.KEYDOWN and event.key == pygame.K_r:
+                        reset_vehicle()
+
+                    # 按C键切换控制方法
+                    elif event.type == pygame.KEYDOWN and event.key == pygame.K_c:
+                        # 切换控制方法
+                        current_control_method = control_methods[
+                            (control_methods.index(current_control_method) + 1) % len(control_methods)]
+                        simulator.follower.set_control_method(
+                            current_control_method)
+                        status_text = f"控制方法已切换为: {current_control_method}"
                         status_color = (0, 0, 255)  # 蓝色
+
+                    # 按E键切换规划算法
+                    elif event.type == pygame.KEYDOWN and event.key == pygame.K_e:
+                        # 切换规划算法
+                        algorithms = ["rrt", "rrt_star", "informed_rrt", "timed_rrt",
+                                      "astar", "dijkstra", "dstar_lite", "theta_star", "attention_dqn_rrt"]
+                        current_algorithm_index = algorithms.index(
+                            args.algorithm) if args.algorithm in algorithms else 0
+                        args.algorithm = algorithms[(
+                            current_algorithm_index + 1) % len(algorithms)]
+                        status_text = f"规划算法已切换为: {args.algorithm}"
+                        status_color = (0, 0, 255)  # 蓝色
+                        print(f"规划算法已切换为: {args.algorithm}")
+
+                        # 如果有目标点，重新规划路径
+                        if goal and not simulating:
+                            path = plan_path_to_goal()
+                            if path:
+                                simulator.follower.set_path(path)
+
+                    # 按S键切换转向模式
+                    elif event.type == pygame.KEYDOWN and event.key == pygame.K_s:
+                        # 切换转向模式
+                        steering_modes = ["normal", "counter", "crab"]
+                        current_mode_index = steering_modes.index(
+                            vehicle.steering_mode)
+                        new_mode = steering_modes[(
+                            current_mode_index + 1) % len(steering_modes)]
+                        vehicle.set_steering_mode(new_mode)
+                        status_text = f"转向模式已切换为: {new_mode}"
+                        status_color = (0, 0, 255)  # 蓝色
+
+                    # 按P键暂停/继续仿真
+                    elif event.type == pygame.KEYDOWN and event.key == pygame.K_p:
+                        # 暂停仿真
+                        simulating = not simulating
+                        pause_state = "暂停" if not simulating else "继续"
+                        status_text = f"仿真已{pause_state}"
+                        status_color = (0, 0, 255)  # 蓝色
+
+                    # 按ESC键退出
+                    elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                        running = False
+
+                # 更新仿真
+                if simulating:
+                    simulate_path()
+
+                # 绘制场景
+                draw_scene()
+
+                # 控制帧率
+                clock.tick(60)
+
+            except pygame.error as e:
+                print(f"pygame错误: {e}")
+                if "video system not initialized" in str(e):
+                    # 尝试重新初始化视频系统
+                    try:
+                        pygame.display.quit()
+                        pygame.display.init()
+                        screen = pygame.display.set_mode(
+                            (screen_width, screen_height))
+                        continue  # 继续主循环
+                    except Exception as reinit_error:
+                        print(f"重新初始化视频系统失败: {reinit_error}")
+                        running = False
                 else:
-                    print("目标点不在未占用的停车位内，请重新选择")
-                    goal = None
-                    status_text = "请选择未占用的停车位作为目标点"
-                    status_color = (255, 0, 0)  # 红色
+                    running = False
 
-            # 按T键重新选择目标点
-            elif event.type == pygame.KEYDOWN and event.key == pygame.K_t:
-                goal = None
-                path = None
-                simulating = False
-                collision_detected = False
-                collision_info = None
-                # 重置车辆位置
-                vehicle.x, vehicle.y = start
-                vehicle.heading = math.pi * 3 / 2  # 朝下
-                vehicle.speed = 0.0
-                vehicle.trajectory = [start]
-                status_text = "等待选择目标点"
-                status_color = (0, 0, 0)  # 黑色
-                print("重新选择目标点")
+        # 收集仿真结果
+        results = {
+            'vehicle_trajectory': vehicle.trajectory,
+            'path': path,
+            'collision_points': [],  # 如果有碰撞点记录可以添加
+            'algorithm': args.algorithm,
+            'control_method': current_control_method,
+            'simulation_time': pygame.time.get_ticks() / 1000.0 if pygame.get_init() else 0  # 转换为秒
+        }
 
-            # 按R键重置车辆位置
-            elif event.type == pygame.KEYDOWN and event.key == pygame.K_r:
-                reset_vehicle()
+        # 在退出主循环后，显示可视化结果
+        visualize_results(env, start, goal, path, results)
 
-            # 按C键切换控制方法
-            elif event.type == pygame.KEYDOWN and event.key == pygame.K_c:
-                # 切换控制方法
-                current_control_method = control_methods[
-                    (control_methods.index(current_control_method) +
-                     1) % len(control_methods)]
-                follower.set_control_method(current_control_method)
-                status_text = f"控制方法已切换为: {current_control_method}"
-                status_color = (0, 0, 255)  # 蓝色
+    except Exception as e:
+        print(f"仿真过程中发生错误: {e}")
+        traceback.print_exc()
+    finally:
+        # 恢复simulator的原始属性
+        simulator.width = original_width
+        simulator.height = original_height
+        simulator.scale = original_scale
+        simulator.vehicle = original_vehicle
+        simulator.follower = original_follower
+        simulator.environment = original_environment
+        simulator.config['dt'] = original_dt
+        simulator.config['fps'] = original_fps
 
-            # 按E键切换规划算法
-            elif event.type == pygame.KEYDOWN and event.key == pygame.K_e:
-                # 切换规划算法
-                algorithms = ["rrt", "rrt_star", "informed_rrt", "timed_rrt",
-                              "astar", "dijkstra", "dstar_lite", "theta_star"]
-                current_algorithm_index = algorithms.index(
-                    args.algorithm) if args.algorithm in algorithms else 0
-                args.algorithm = algorithms[(
-                    current_algorithm_index + 1) % len(algorithms)]
-                status_text = f"规划算法已切换为: {args.algorithm}"
-                status_color = (0, 0, 255)  # 蓝色
-                print(f"规划算法已切换为: {args.algorithm}")
+        # 确保正确清理 pygame
+        try:
+            pygame.display.quit()
+        except Exception as e:
+            print(f"清理pygame display时出错: {e}")
+            pass
+        try:
+            pygame.quit()
+        except Exception as e:
+            print(f"清理pygame时出错: {e}")
+            pass
 
-                # 如果有目标点，重新规划路径
-                if goal and not simulating:
-                    path = plan_path_to_goal()
-                    if path:
-                        follower.set_path(path)
-
-            # 按S键切换转向模式
-            elif event.type == pygame.KEYDOWN and event.key == pygame.K_s:
-                # 切换转向模式
-                steering_modes = ["normal", "counter", "crab"]
-                current_mode_index = steering_modes.index(
-                    vehicle.steering_mode)
-                new_mode = steering_modes[(
-                    current_mode_index + 1) % len(steering_modes)]
-                vehicle.set_steering_mode(new_mode)
-                status_text = f"转向模式已切换为: {new_mode}"
-                status_color = (0, 0, 255)  # 蓝色
-
-        # 更新仿真
-        if simulating:
-            simulate_path()
-
-        # 绘制场景
-        draw_scene()
-
-        # 控制帧率
-        clock.tick(60)
-
-    pygame.quit()
+    return results
 
 
-def draw_scene(screen, env, scale, offset_x, offset_y):
-    """绘制场景"""
-    for obstacle in env.obstacles:
-        # 转换坐标到屏幕坐标系
-        screen_x = int(obstacle.x * scale + offset_x)
-        screen_y = int(obstacle.y * scale + offset_y)
+def visualize_results(env, start, goal, path, results):
+    """使用matplotlib可视化结果"""
+    if not results:
+        print("没有可视化结果")
+        return
 
-        # 获取颜色
-        color = obstacle.color if hasattr(
-            obstacle, 'color') else (100, 100, 100, 200)
+    try:
+        import matplotlib.pyplot as plt
 
-        if obstacle.type == "rectangle":
-            # 计算矩形的屏幕尺寸
-            screen_width = int(obstacle.width * scale)
-            screen_height = int(obstacle.height * scale)
+        plt.figure(figsize=(12, 8))
 
-            # 创建矩形表面
-            rect_surface = pygame.Surface(
-                (screen_width, screen_height), pygame.SRCALPHA)
+        # 绘制环境边界和障碍物
+        for obs in env.obstacles:
+            if obs.type == "rectangle":
+                if hasattr(obs, 'is_parking_spot') and obs.is_parking_spot:
+                    color = 'r' if obs.occupied else 'g'
+                    alpha = 0.3
+                else:
+                    color = 'gray'
+                    alpha = 0.5
 
-            # 绘制矩形
-            is_filled = obstacle.is_filled if hasattr(
-                obstacle, 'is_filled') else True
-            line_width = obstacle.line_width if hasattr(
-                obstacle, 'line_width') else 1
+                # 计算矩形的四个角点
+                w, h = obs.width/2, obs.height/2
+                corners = np.array(
+                    [[-w, -h], [w, -h], [w, h], [-w, h], [-w, -h]])
 
-            if is_filled:
-                pygame.draw.rect(rect_surface, color,
-                                 (0, 0, screen_width, screen_height))
-            else:
-                pygame.draw.rect(rect_surface, color, (0, 0, screen_width, screen_height),
-                                 width=line_width)
+                # 如果有角度，进行旋转
+                if hasattr(obs, 'angle') and obs.angle != 0:
+                    angle_rad = np.radians(obs.angle)
+                    rot_matrix = np.array([[np.cos(angle_rad), -np.sin(angle_rad)],
+                                           [np.sin(angle_rad), np.cos(angle_rad)]])
+                    corners = np.dot(corners, rot_matrix.T)
 
-            # 旋转矩形
-            angle = obstacle.angle if hasattr(obstacle, 'angle') else 0
-            rotated_surface = pygame.transform.rotate(rect_surface, angle)
+                # 平移到障碍物位置
+                corners = corners + np.array([obs.x, obs.y])
+                plt.fill(corners[:, 0], corners[:, 1],
+                         color=color, alpha=alpha)
 
-            # 获取旋转后的矩形中心位置
-            rot_rect = rotated_surface.get_rect(center=(screen_x, screen_y))
+        # 绘制规划路径-添加不同算法轨迹对比
+        if path:
+            path_x = [p[0] for p in path]
+            path_y = [p[1] for p in path]
+            plt.plot(path_x, path_y, 'b-',
+                     label='Planned Path', linewidth=2)
 
-            # 绘制到屏幕
-            screen.blit(rotated_surface, rot_rect.topleft)
+        # 绘制车辆轨迹
+        if results['vehicle_trajectory']:
+            traj_x = [p[0] for p in results['vehicle_trajectory']]
+            traj_y = [p[1] for p in results['vehicle_trajectory']]
+            plt.plot(traj_x, traj_y, 'g--',
+                     label='Vehicle Trajectory', linewidth=2)
+        # 绘制车辆在轨迹上的轮廓线
+        if results['vehicle_trajectory']:
+            traj_x = [p[0] for p in results['vehicle_trajectory']]
+            traj_y = [p[1] for p in results['vehicle_trajectory']]
+            plt.plot(traj_x, traj_y, 'g--',
+                     label='Vehicle Trajectory', linewidth=2)
+        # 绘制起点和终点
+        plt.plot(start[0], start[1], 'go', label='Start', markersize=10)
+        if goal:
+            plt.plot(goal[0], goal[1], 'ro', label='Goal', markersize=10)
 
-        elif obstacle.type == "circle":
-            # 计算圆的屏幕半径
-            screen_radius = int(obstacle.radius * scale)
+        # 设置图表属性
+        plt.title(
+            f'Path Planning Results\nAlgorithm: {results["algorithm"]}, Control: {results["control_method"]}')
+        plt.xlabel('X (m)')
+        plt.ylabel('Y (m)')
+        plt.axis('equal')
+        plt.grid(True)
+        plt.legend()
 
-            is_filled = obstacle.is_filled if hasattr(
-                obstacle, 'is_filled') else True
-            line_width = obstacle.line_width if hasattr(
-                obstacle, 'line_width') else 1
+        # 显示图表
+        plt.show()
+    except Exception as e:
+        print(f"可视化结果时出错: {e}")
+        traceback.print_exc()
 
-            if is_filled:
-                pygame.draw.circle(
-                    screen, color, (screen_x, screen_y), screen_radius)
-            else:
-                pygame.draw.circle(screen, color, (screen_x, screen_y), screen_radius,
-                                   width=line_width)
+
+def main():
+    """主函数：创建场景、规划路径并仿真"""
+    # 初始化 pygame
+    pygame.init()
+    if not pygame.display.get_init():
+        pygame.display.init()
+
+    # 设置环境变量以避免在某些系统上的音频初始化问题
+    import os
+    os.environ['SDL_AUDIODRIVER'] = 'dummy'
+
+    try:
+        # 解析命令行参数
+        args = parse_args()
+
+        # 加载配置文件
+        config = load_config(args.config)
+
+        # 命令行参数覆盖配置文件
+        if args.algorithm is not None:
+            config['path_planning']['default_algorithm'] = args.algorithm
+        if args.iterations is not None:
+            for alg in config['path_planning']['algorithms']:
+                config['path_planning']['algorithms'][alg]['max_iterations'] = args.iterations
+        if args.step_size is not None:
+            for alg in config['path_planning']['algorithms']:
+                if 'step_size' in config['path_planning']['algorithms'][alg]:
+                    config['path_planning']['algorithms'][alg]['step_size'] = args.step_size
+        if args.robot_speed is not None:
+            config['path_planning']['algorithms']['timed_rrt']['robot_speed'] = args.robot_speed
+        if args.control_method is not None:
+            config['control']['default_method'] = args.control_method
+
+        # 创建场景
+        env, start, goal, goal_orientation = create_parking_scenario(
+            use_random_scene=args.random_scene,
+            config=config
+        )
+
+        # 创建仿真器并设置环境
+        simulator = PygameSimulator({
+            'window_width': config['window']['width'],
+            'window_height': config['window']['height'],
+            'window_title': config['window']['title'],
+            'scale': config['simulation']['scale'],
+            'fps': config['simulation']['fps'],
+            'dt': config['simulation']['dt'],
+            'lookahead': config['simulation']['lookahead'],
+            'vehicle': {
+                'length': config['vehicle']['length'],
+                'width': config['vehicle']['width'],
+                'wheelbase': config['vehicle']['wheelbase']
+            }
+        })
+        simulator.set_environment(env)
+
+        # 启动交互式规划
+        interactive_planning(simulator, env, start, args)
+
+    except Exception as e:
+        print(f"仿真过程中发生错误: {e}")
+        traceback.print_exc()
+    finally:
+        # 确保正确清理 pygame
+        try:
+            pygame.display.quit()
+        except Exception as e:
+            print(f"清理pygame display时出错: {e}")
+        try:
+            pygame.quit()
+        except Exception as e:
+            print(f"清理pygame时出错: {e}")
 
 
 def parse_args():
@@ -1415,8 +1553,8 @@ def parse_args():
     parser.add_argument(
         '--algorithm',
         type=str,
-        choices=['rrt', 'rrt_star', 'informed_rrt',
-                 'timed_rrt', 'dijkstra', 'dstar_lite', 'theta_star', 'astar'],
+        choices=['rrt', 'rrt_star', 'informed_rrt', 'timed_rrt', 'dijkstra',
+                 'dstar_lite', 'theta_star', 'astar', 'attention_dqn_rrt'],
         default='dijkstra',
         help='路径规划算法'
     )
@@ -1456,7 +1594,12 @@ def parse_args():
         help='车辆控制算法'
     )
 
-    return parser.parse_args()
+    args = parser.parse_args()
+
+    # 确保iterations是整数
+    args.iterations = int(args.iterations)
+
+    return args
 
 
 if __name__ == "__main__":
