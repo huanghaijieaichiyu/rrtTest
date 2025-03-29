@@ -1,6 +1,5 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-
 """
 Pygame 车辆仿真器
 
@@ -58,8 +57,7 @@ def get_font(size: int = 24) -> pygame.font.Font:
 
     # 如果系统字体都不可用，尝试加载自带字体文件
     try:
-        font_path = os.path.join(os.path.dirname(
-            __file__), "fonts", "simhei.ttf")
+        font_path = os.path.join(os.path.dirname(__file__), "fonts", "simhei.ttf")
         if os.path.exists(font_path):
             return pygame.font.Font(font_path, size)
     except:
@@ -72,8 +70,7 @@ def get_font(size: int = 24) -> pygame.font.Font:
 class VehicleModel:
     """增强的车辆动力学模型 - 四轮转向(4WS)模型，带传感器"""
 
-    def __init__(self, x: float = 0, y: float = 0, heading: float = 0,
-                 length: float = 4.5, width: float = 1.8):
+    def __init__(self, x: float = 0, y: float = 0, heading: float = 0, length: float = 4.5, width: float = 1.8):
         """
         初始化车辆模型
 
@@ -92,7 +89,7 @@ class VehicleModel:
         self.speed = 0.0  # m/s
         self.acceleration = 0.0  # m/s^2
         self.front_steer_angle = 0.0  # 前轮转向角(弧度)
-        self.rear_steer_angle = 0.0   # 后轮转向角(弧度)
+        self.rear_steer_angle = 0.0  # 后轮转向角(弧度)
         self.wheelbase = 2.7  # 轴距(米)
 
         # 车轮参数
@@ -104,9 +101,9 @@ class VehicleModel:
 
         # 车辆控制参数
         self.max_speed = 5.0  # m/s
-        self.max_accel = 2.0   # m/s^2
-        self.max_brake = 4.0   # m/s^2
-        self.max_steer = math.pi/4  # 最大转向角(弧度)
+        self.max_accel = 2.0  # m/s^2
+        self.max_brake = 4.0  # m/s^2
+        self.max_steer = math.pi / 4  # 最大转向角(弧度)
 
         # 四轮转向模式
         self.steering_mode = "normal"  # 可选: "normal", "counter", "crab"
@@ -115,10 +112,10 @@ class VehicleModel:
         # 传感器配置
         self.sensors = {
             'fisheye_cameras': [],  # 环视摄像头 (黄色)
-            'front_camera': None,   # 前视摄像头 (红色)
-            'ultrasonic': [],       # 超声波雷达 (紫色)
-            'imu': None,            # 消费级IMU (绿色)
-            'gps': None             # 消费级GPS (绿色)
+            'front_camera': None,  # 前视摄像头 (红色)
+            'ultrasonic': [],  # 超声波雷达 (紫色)
+            'imu': None,  # 消费级IMU (绿色)
+            'gps': None  # 消费级GPS (绿色)
         }
 
         # 传感器显示控制
@@ -135,10 +132,10 @@ class VehicleModel:
         # 环视摄像头 (4个，黄色)
         # 车头/车尾各2个，左/右后视镜各1个
         fisheye_positions = [
-            (half_length, 0),           # 车头中央
-            (-half_length, 0),          # 车尾中央
-            (0, half_width),            # 右侧中央
-            (0, -half_width)            # 左侧中央
+            (half_length, 0),  # 车头中央
+            (-half_length, 0),  # 车尾中央
+            (0, half_width),  # 右侧中央
+            (0, -half_width)  # 左侧中央
         ]
 
         for pos in fisheye_positions:
@@ -211,10 +208,10 @@ class VehicleModel:
 
         # 车辆本地坐标系中的四个角
         corners_local = [
-            (half_length, half_width),   # 右前
+            (half_length, half_width),  # 右前
             (half_length, -half_width),  # 左前
             (-half_length, -half_width),  # 左后
-            (-half_length, half_width)   # 右后
+            (-half_length, half_width)  # 右后
         ]
 
         # 转换到世界坐标系
@@ -241,10 +238,10 @@ class VehicleModel:
 
         # 车轮在车身坐标系中的位置
         wheel_positions_local = [
-            (half_length, half_width, self.front_steer_angle),    # 右前轮
-            (half_length, -half_width, self.front_steer_angle),   # 左前轮
-            (-half_length, -half_width, self.rear_steer_angle),   # 左后轮
-            (-half_length, half_width, self.rear_steer_angle)     # 右后轮
+            (half_length, half_width, self.front_steer_angle),  # 右前轮
+            (half_length, -half_width, self.front_steer_angle),  # 左前轮
+            (-half_length, -half_width, self.rear_steer_angle),  # 左后轮
+            (-half_length, half_width, self.rear_steer_angle)  # 右后轮
         ]
 
         # 转换到世界坐标系
@@ -265,63 +262,42 @@ class VehicleModel:
         cos_h = math.cos(self.heading)
         sin_h = math.sin(self.heading)
 
-        sensor_positions = {
-            'fisheye_cameras': [],
-            'front_camera': None,
-            'ultrasonic': [],
-            'imu': None,
-            'gps': None
-        }
+        sensor_positions = {'fisheye_cameras': [], 'front_camera': None, 'ultrasonic': [], 'imu': None, 'gps': None}
 
         # 环视摄像头
         for camera in self.sensors['fisheye_cameras']:
             lx, ly = camera['local_pos']
             x = self.x + lx * cos_h - ly * sin_h
             y = self.y + lx * sin_h + ly * cos_h
-            sensor_positions['fisheye_cameras'].append({
-                'pos': (x, y),
-                'color': camera['color']
-            })
+            sensor_positions['fisheye_cameras'].append({'pos': (x, y), 'color': camera['color']})
 
         # 前视摄像头
         if self.sensors['front_camera']:
             lx, ly = self.sensors['front_camera']['local_pos']
             x = self.x + lx * cos_h - ly * sin_h
             y = self.y + lx * sin_h + ly * cos_h
-            sensor_positions['front_camera'] = {
-                'pos': (x, y),
-                'color': self.sensors['front_camera']['color']
-            }
+            sensor_positions['front_camera'] = {'pos': (x, y), 'color': self.sensors['front_camera']['color']}
 
         # 超声波雷达
         for sensor in self.sensors['ultrasonic']:
             lx, ly = sensor['local_pos']
             x = self.x + lx * cos_h - ly * sin_h
             y = self.y + lx * sin_h + ly * cos_h
-            sensor_positions['ultrasonic'].append({
-                'pos': (x, y),
-                'color': sensor['color']
-            })
+            sensor_positions['ultrasonic'].append({'pos': (x, y), 'color': sensor['color']})
 
         # IMU
         if self.sensors['imu']:
             lx, ly = self.sensors['imu']['local_pos']
             x = self.x + lx * cos_h - ly * sin_h
             y = self.y + lx * sin_h + ly * cos_h
-            sensor_positions['imu'] = {
-                'pos': (x, y),
-                'color': self.sensors['imu']['color']
-            }
+            sensor_positions['imu'] = {'pos': (x, y), 'color': self.sensors['imu']['color']}
 
         # GPS
         if self.sensors['gps']:
             lx, ly = self.sensors['gps']['local_pos']
             x = self.x + lx * cos_h - ly * sin_h
             y = self.y + lx * sin_h + ly * cos_h
-            sensor_positions['gps'] = {
-                'pos': (x, y),
-                'color': self.sensors['gps']['color']
-            }
+            sensor_positions['gps'] = {'pos': (x, y), 'color': self.sensors['gps']['color']}
 
         return sensor_positions
 
@@ -402,17 +378,14 @@ class VehicleModel:
                     # 计算等效转向半径 (简化模型)
                     if front_sign == rear_sign:
                         # 同向转向 (蟹行模式)
-                        effective_radius = (
-                            front_radius * rear_radius) / (front_radius + rear_radius)
+                        effective_radius = (front_radius * rear_radius) / (front_radius + rear_radius)
                     else:
                         # 反向转向 (提高转弯半径)
-                        effective_radius = (
-                            front_radius * rear_radius) / abs(front_radius - rear_radius)
+                        effective_radius = (front_radius * rear_radius) / abs(front_radius - rear_radius)
                     effective_sign = front_sign
 
                 # 计算角速度
-                angular_velocity = (
-                    self.speed * effective_sign) / effective_radius
+                angular_velocity = (self.speed * effective_sign) / effective_radius
 
             # 更新位置和朝向
             self.heading += angular_velocity * dt
@@ -462,12 +435,12 @@ class PathFollower:
 
         # PID控制参数
         self.pid_params = {
-            'kp_steer': 0.7,   # 转向比例系数
+            'kp_steer': 0.7,  # 转向比例系数
             'ki_steer': 0.01,  # 转向积分系数
-            'kd_steer': 0.1,   # 转向微分系数
-            'kp_speed': 0.5,   # 速度比例系数
+            'kd_steer': 0.1,  # 转向微分系数
+            'kp_speed': 0.5,  # 速度比例系数
             'ki_speed': 0.01,  # 速度积分系数
-            'kd_speed': 0.05   # 速度微分系数
+            'kd_speed': 0.05  # 速度微分系数
         }
         self.steer_error_prev = 0.0
         self.steer_error_sum = 0.0
@@ -476,22 +449,22 @@ class PathFollower:
 
         # MPC控制参数
         self.mpc_params = {
-            'horizon': 10,     # 预测步长
-            'dt': 0.1,         # 时间步长
-            'q_x': 1.0,        # 纵向误差权重
-            'q_y': 2.0,        # 横向误差权重
+            'horizon': 10,  # 预测步长
+            'dt': 0.1,  # 时间步长
+            'q_x': 1.0,  # 纵向误差权重
+            'q_y': 2.0,  # 横向误差权重
             'q_heading': 3.0,  # 朝向误差权重
-            'r_steer': 1.0,    # 转向输入权重
-            'r_accel': 0.5     # 加速度输入权重
+            'r_steer': 1.0,  # 转向输入权重
+            'r_accel': 0.5  # 加速度输入权重
         }
 
         # LQR控制参数
         self.lqr_params = {
-            'q_y': 1.0,        # 横向误差权重
+            'q_y': 1.0,  # 横向误差权重
             'q_heading': 2.0,  # 朝向误差权重
-            'q_speed': 0.5,    # 速度误差权重
-            'r_steer': 0.1,    # 转向输入权重
-            'r_accel': 0.1     # 加速度输入权重
+            'q_speed': 0.5,  # 速度误差权重
+            'r_steer': 0.1,  # 转向输入权重
+            'r_accel': 0.1  # 加速度输入权重
         }
 
     def set_path(self, path):
@@ -564,7 +537,7 @@ class PathFollower:
             heading_error += 2 * math.pi
 
         # 根据角度误差计算转向
-        steer = heading_error / (math.pi/4)  # 假设最大转向角为π/4
+        steer = heading_error / (math.pi / 4)  # 假设最大转向角为π/4
         steer = max(-1.0, min(1.0, steer))  # 限制在 [-1, 1] 范围内
 
         # 简单的速度控制：根据转向角的大小调整速度
@@ -588,8 +561,7 @@ class PathFollower:
         closest_idx = target_idx
 
         # 首先找到最近点
-        for i in range(self.current_target_idx,
-                       min(self.current_target_idx + 30, len(self.path))):
+        for i in range(self.current_target_idx, min(self.current_target_idx + 30, len(self.path))):
             if i >= len(self.path):
                 break
 
@@ -639,14 +611,12 @@ class PathFollower:
 
         # PID控制 - 转向
         # 限制积分项，防止积分饱和
-        self.steer_error_sum = max(-3.0, min(3.0,
-                                             self.steer_error_sum + heading_error))
+        self.steer_error_sum = max(-3.0, min(3.0, self.steer_error_sum + heading_error))
         steer_error_diff = heading_error - self.steer_error_prev
         self.steer_error_prev = heading_error
 
         # 计算PID控制输出
-        steer = (self.pid_params['kp_steer'] * heading_error +
-                 self.pid_params['ki_steer'] * self.steer_error_sum +
+        steer = (self.pid_params['kp_steer'] * heading_error + self.pid_params['ki_steer'] * self.steer_error_sum +
                  self.pid_params['kd_steer'] * steer_error_diff)
 
         # 限制在 [-1, 1] 范围内
@@ -656,8 +626,7 @@ class PathFollower:
         speed_error = self.target_speed - vehicle.speed
 
         # 限制积分项，防止积分饱和
-        self.speed_error_sum = max(-5.0, min(5.0,
-                                             self.speed_error_sum + speed_error))
+        self.speed_error_sum = max(-5.0, min(5.0, self.speed_error_sum + speed_error))
         speed_error_diff = speed_error - self.speed_error_prev
         self.speed_error_prev = speed_error
 
@@ -833,6 +802,7 @@ class PathFollower:
 
 
 class ParkingEnvironment(Environment):
+
     def __init__(self, width, height):
         """初始化停车场环境"""
         super().__init__(width, height)
@@ -840,33 +810,30 @@ class ParkingEnvironment(Environment):
         self.vehicle_width = 1.8  # 车辆宽度
 
     def add_obstacle(
-        self,
-        x,
-        y,
-        obstacle_type="rectangle",
-        width=1.0,
-        height=1.0,
-        radius=0.5,
-        angle=0.0,
-        color=(100, 100, 100, 200),  # 默认颜色：灰色半透明
-        is_parking_spot=False,  # 新增停车位标识
-        occupied=False,         # 新增占用状态
-        is_filled=True,         # 是否填充
-        line_width=1            # 线宽
+            self,
+            x,
+            y,
+            obstacle_type="rectangle",
+            width=1.0,
+            height=1.0,
+            radius=0.5,
+            angle=0.0,
+            color=(100, 100, 100, 200),  # 默认颜色：灰色半透明
+            is_parking_spot=False,  # 新增停车位标识
+            occupied=False,  # 新增占用状态
+            is_filled=True,  # 是否填充
+            line_width=1  # 线宽
     ):
         """添加障碍物，支持颜色属性和停车位状态"""
         # 根据占用状态设置颜色
         if is_parking_spot:
-            color = (255, 0, 0, 200) if occupied else (
-                0, 255, 0, 200)  # 红色表示占用，绿色表示空闲
+            color = (255, 0, 0, 200) if occupied else (0, 255, 0, 200)  # 红色表示占用，绿色表示空闲
 
         # 创建一个新的障碍物对象
         if obstacle_type == "rectangle":
-            obstacle = RectangleObstacle(
-                x, y, width, height, angle, color, is_filled, line_width)
+            obstacle = RectangleObstacle(x, y, width, height, angle, color, is_filled, line_width)
         else:  # circle
-            obstacle = CircleObstacle(
-                x, y, radius, color, is_filled, line_width)
+            obstacle = CircleObstacle(x, y, radius, color, is_filled, line_width)
 
         # 为了兼容旧代码，添加额外属性
         obstacle.type = obstacle_type
@@ -878,47 +845,20 @@ class ParkingEnvironment(Environment):
         if is_parking_spot:
             # 生成停车位扩展区域
             expansion_factor = 1.3  # 区域扩展系数
-            safety_color = (255, 0, 0, 40) if occupied else (
-                0, 255, 0, 40)  # 匹配停车位颜色
+            safety_color = (255, 0, 0, 40) if occupied else (0, 255, 0, 40)  # 匹配停车位颜色
 
             if obstacle_type == "rectangle":
-                safety_obstacle = RectangleObstacle(
-                    x, y,
-                    width * expansion_factor,
-                    height * expansion_factor,
-                    angle,
-                    safety_color,
-                    True,
-                    1
-                )
+                safety_obstacle = RectangleObstacle(x, y, width * expansion_factor, height * expansion_factor, angle,
+                                                    safety_color, True, 1)
             else:  # circle
-                safety_obstacle = CircleObstacle(
-                    x, y,
-                    radius * expansion_factor,
-                    safety_color,
-                    True,
-                    1
-                )
+                safety_obstacle = CircleObstacle(x, y, radius * expansion_factor, safety_color, True, 1)
         else:
             safety_color = (0, 0, 255, 40)
             if obstacle_type == "rectangle":
-                safety_obstacle = RectangleObstacle(
-                    x, y,
-                    width + 2 * safety_margin,
-                    height + 2 * safety_margin,
-                    angle,
-                    safety_color,
-                    True,
-                    1
-                )
+                safety_obstacle = RectangleObstacle(x, y, width + 2 * safety_margin, height + 2 * safety_margin, angle,
+                                                    safety_color, True, 1)
             else:  # circle
-                safety_obstacle = CircleObstacle(
-                    x, y,
-                    radius + safety_margin,
-                    safety_color,
-                    True,
-                    1
-                )
+                safety_obstacle = CircleObstacle(x, y, radius + safety_margin, safety_color, True, 1)
 
         # 为了兼容旧代码，添加额外属性
         safety_obstacle.type = obstacle_type
@@ -934,8 +874,7 @@ class ParkingEnvironment(Environment):
 
     def add_dynamic_obstacle(self, x0, y0, vx, vy, width, height):
         """添加动态障碍物"""
-        self.dynamic_obstacles.append(
-            DynamicObstacle(x0, y0, vx, vy, width, height))
+        self.dynamic_obstacles.append(DynamicObstacle(x0, y0, vx, vy, width, height))
 
     def find_parking_spot(self, point):
         """
@@ -948,7 +887,7 @@ class ParkingEnvironment(Environment):
             如果点在未占用的停车位内，返回停车位对象；否则返回None
         """
         for i in range(0, len(self.obstacles), 2):
-            obstacle = self.obstacles[i+1]  # 实际障碍物（非安全边界）
+            obstacle = self.obstacles[i + 1]  # 实际障碍物（非安全边界）
             if hasattr(obstacle, 'is_parking_spot') and obstacle.is_parking_spot and not obstacle.occupied:
                 # 检查点是否在这个未占用的停车位内
                 if obstacle.type == "rectangle":
@@ -968,8 +907,7 @@ class ParkingEnvironment(Environment):
                         return obstacle
                 elif obstacle.type == "circle":
                     # 计算点到圆心的距离
-                    distance = math.sqrt(
-                        (point[0] - obstacle.x) ** 2 + (point[1] - obstacle.y) ** 2)
+                    distance = math.sqrt((point[0] - obstacle.x)**2 + (point[1] - obstacle.y)**2)
 
                     # 如果距离小于等于半径，则点在圆内
                     if distance <= obstacle.radius:
@@ -1003,23 +941,22 @@ class ParkingEnvironment(Environment):
                     1 < len(self.obstacles) else None  # 实际障碍物
 
                 # 跳过未占用的停车位及其安全边界
-                if obstacle and hasattr(obstacle, 'is_parking_spot') and obstacle.is_parking_spot and not obstacle.occupied:
+                if obstacle and hasattr(obstacle,
+                                        'is_parking_spot') and obstacle.is_parking_spot and not obstacle.occupied:
                     continue
 
                 # 检查实际障碍物
                 if obstacle:
                     obstacle_polygon = None
                     if obstacle.type == 'circle':
-                        obstacle_polygon = Point(
-                            obstacle.x, obstacle.y).buffer(obstacle.radius)
+                        obstacle_polygon = Point(obstacle.x, obstacle.y).buffer(obstacle.radius)
                     else:  # rectangle
                         # 计算矩形的角点
                         x_min = obstacle.x - obstacle.width / 2
                         x_max = obstacle.x + obstacle.width / 2
                         y_min = obstacle.y - obstacle.height / 2
                         y_max = obstacle.y + obstacle.height / 2
-                        corners = [(x_min, y_min), (x_max, y_min),
-                                   (x_max, y_max), (x_min, y_max)]
+                        corners = [(x_min, y_min), (x_max, y_min), (x_max, y_max), (x_min, y_max)]
 
                         # 如果有角度，旋转角点
                         if hasattr(obstacle, 'angle') and obstacle.angle != 0:
@@ -1032,8 +969,7 @@ class ParkingEnvironment(Environment):
                                 ty = y - obstacle.y
                                 rx = tx * cos_angle - ty * sin_angle
                                 ry = tx * sin_angle + ty * cos_angle
-                                rotated_corners.append(
-                                    (rx + obstacle.x, ry + obstacle.y))
+                                rotated_corners.append((rx + obstacle.x, ry + obstacle.y))
                             corners = rotated_corners
 
                         obstacle_polygon = Polygon(corners)
@@ -1062,8 +998,7 @@ class ParkingEnvironment(Environment):
                 angle = math.atan2(dy, dx)
 
                 # 创建临时车辆模型
-                temp_vehicle = VehicleModel(
-                    x, y, angle, vehicle_length, vehicle_width)
+                temp_vehicle = VehicleModel(x, y, angle, vehicle_length, vehicle_width)
 
                 # 检查碰撞
                 collision_info = check_vehicle_collision(temp_vehicle, self)
@@ -1092,8 +1027,7 @@ class ParkingEnvironment(Environment):
         # 检查动态障碍物
         for dyn_obs in self.dynamic_obstacles:
             for t in np.arange(start_time, end_time, 0.1):
-                robot_pos = interpolate_position(
-                    start, end, start_time, end_time, t)
+                robot_pos = interpolate_position(start, end, start_time, end_time, t)
                 obs_pos = dyn_obs.get_position_at_time(t)
                 if check_collision(robot_pos, obs_pos, dyn_obs.width, dyn_obs.height):
                     return True
@@ -1159,16 +1093,14 @@ def check_vehicle_collision(vehicle, env):
         if obstacle:
             obstacle_polygon = None
             if obstacle.type == 'circle':
-                obstacle_polygon = Point(
-                    obstacle.x, obstacle.y).buffer(obstacle.radius)
+                obstacle_polygon = Point(obstacle.x, obstacle.y).buffer(obstacle.radius)
             else:  # rectangle
                 # 计算矩形的角点
                 x_min = obstacle.x - obstacle.width / 2
                 x_max = obstacle.x + obstacle.width / 2
                 y_min = obstacle.y - obstacle.height / 2
                 y_max = obstacle.y + obstacle.height / 2
-                corners = [(x_min, y_min), (x_max, y_min),
-                           (x_max, y_max), (x_min, y_max)]
+                corners = [(x_min, y_min), (x_max, y_min), (x_max, y_max), (x_min, y_max)]
 
                 # 如果有角度，旋转角点
                 if hasattr(obstacle, 'angle') and obstacle.angle != 0:
@@ -1185,40 +1117,30 @@ def check_vehicle_collision(vehicle, env):
                         rx = tx * cos_angle - ty * sin_angle
                         ry = tx * sin_angle + ty * cos_angle
                         # 平移回原位置
-                        rotated_corners.append(
-                            (rx + obstacle.x, ry + obstacle.y))
+                        rotated_corners.append((rx + obstacle.x, ry + obstacle.y))
 
                     obstacle_polygon = Polygon(rotated_corners)
                 else:
                     # 不旋转的矩形
-                    obstacle_polygon = Polygon([
-                        (x_min, y_min),
-                        (x_max, y_min),
-                        (x_max, y_max),
-                        (x_min, y_max)
-                    ])
+                    obstacle_polygon = Polygon([(x_min, y_min), (x_max, y_min), (x_max, y_max), (x_min, y_max)])
 
             if obstacle_polygon and vehicle_polygon.intersects(obstacle_polygon):
                 collision_info['collision'] = True
                 collision_info['position'] = (obstacle.x, obstacle.y)
                 collision_info['obstacle'] = obstacle
-                collision_info['distance'] = np.hypot(
-                    vehicle.x - obstacle.x, vehicle.y - obstacle.y)
+                collision_info['distance'] = np.hypot(vehicle.x - obstacle.x, vehicle.y - obstacle.y)
                 return collision_info  # 发生实际碰撞立即返回
 
         # 检查安全边界（如果没有发生实际碰撞）
         if hasattr(safety_obstacle, 'type') and safety_obstacle.type == 'circle':
             # 圆形安全边界
-            safety_circle = Point(safety_obstacle.x, safety_obstacle.y).buffer(
-                safety_obstacle.radius)
+            safety_circle = Point(safety_obstacle.x, safety_obstacle.y).buffer(safety_obstacle.radius)
             if vehicle_polygon.intersects(safety_circle):
                 if not collision_info['collision']:  # 只有在没有实际碰撞的情况下才更新
                     collision_info['safety_warning'] = True
-                    collision_info['position'] = (
-                        safety_obstacle.x, safety_obstacle.y)
+                    collision_info['position'] = (safety_obstacle.x, safety_obstacle.y)
                     collision_info['obstacle'] = safety_obstacle
-                    collision_info['distance'] = np.hypot(
-                        vehicle.x - safety_obstacle.x, vehicle.y - safety_obstacle.y)
+                    collision_info['distance'] = np.hypot(vehicle.x - safety_obstacle.x, vehicle.y - safety_obstacle.y)
 
     return collision_info
 
@@ -1278,8 +1200,7 @@ def check_path_collision(path, env, vehicle_length, vehicle_width, steps=10):
             y = start[1] + t * dy
 
             # 创建临时车辆模型进行碰撞检测
-            temp_vehicle = VehicleModel(
-                x, y, angle, vehicle_length, vehicle_width)
+            temp_vehicle = VehicleModel(x, y, angle, vehicle_length, vehicle_width)
             temp_result = check_vehicle_collision(temp_vehicle, env)
 
             if temp_result['collision']:
@@ -1291,10 +1212,8 @@ def check_path_collision(path, env, vehicle_length, vehicle_width, steps=10):
                 # 在当前点附近增加额外的检查点
                 for angle_offset in [-0.1, 0.1]:  # 小角度偏移
                     temp_angle = angle + angle_offset
-                    temp_vehicle = VehicleModel(
-                        x, y, temp_angle, vehicle_length, vehicle_width)
-                    detailed_result = check_vehicle_collision(
-                        temp_vehicle, env)
+                    temp_vehicle = VehicleModel(x, y, temp_angle, vehicle_length, vehicle_width)
+                    detailed_result = check_vehicle_collision(temp_vehicle, env)
                     if detailed_result['collision']:
                         return detailed_result
 
@@ -1324,8 +1243,7 @@ class PygameSimulator:
 
         # 创建窗口
         self.screen = pygame.display.set_mode((self.width, self.height))
-        pygame.display.set_caption(self.config.get(
-            'window_title', 'RRT-Pygame 仿真器'))
+        pygame.display.set_caption(self.config.get('window_title', 'RRT-Pygame 仿真器'))
 
         # 创建时钟对象
         self.clock = pygame.time.Clock()
@@ -1335,22 +1253,16 @@ class PygameSimulator:
 
         # 初始化车辆和环境
         self.environment = None
-        self.vehicle = VehicleModel(
-            length=vehicle_config.get('length', 4.5),
-            width=vehicle_config.get('width', 1.8)
-        )
+        self.vehicle = VehicleModel(length=vehicle_config.get('length', 4.5), width=vehicle_config.get('width', 1.8))
         # 更新车辆参数
         self.vehicle.wheel_base = vehicle_config.get('wheel_base', 2.7)
         self.vehicle.max_speed = vehicle_config.get('max_speed', 5.0)
         self.vehicle.max_accel = vehicle_config.get('max_accel', 2.0)
         self.vehicle.max_decel = vehicle_config.get('max_decel', 4.0)
-        self.vehicle.max_steer_angle = vehicle_config.get(
-            'max_steer_angle', 0.7854)
+        self.vehicle.max_steer_angle = vehicle_config.get('max_steer_angle', 0.7854)
 
-        self.follower = PathFollower(
-            lookahead=self.config.get('lookahead', 5.0),
-            control_method=self.config.get('control_method', 'default')
-        )
+        self.follower = PathFollower(lookahead=self.config.get('lookahead', 5.0),
+                                     control_method=self.config.get('control_method', 'default'))
 
         # 仿真状态
         self.running = False
@@ -1359,8 +1271,7 @@ class PygameSimulator:
 
         # 控制方法
         self.control_methods = ["default", "pid", "mpc", "lqr"]
-        self.current_control_method = self.config.get(
-            'control_method', 'default')
+        self.current_control_method = self.config.get('control_method', 'default')
 
         # 记录数据
         self.simulation_data = {
@@ -1471,10 +1382,10 @@ class PygameSimulator:
 
         # 车窗在车身坐标系中的位置
         window_local = [
-            (half_length, half_width),   # 右前
+            (half_length, half_width),  # 右前
             (half_length, -half_width),  # 左前
             (-half_length, -half_width),  # 左后
-            (-half_length, half_width)   # 右后
+            (-half_length, half_width)  # 右后
         ]
 
         # 转换到世界坐标系，再转换到屏幕坐标系
@@ -1503,10 +1414,10 @@ class PygameSimulator:
 
             # 车轮在自身坐标系中的四个角
             wheel_corners_local = [
-                (wheel_half_length, wheel_half_width),   # 右前
+                (wheel_half_length, wheel_half_width),  # 右前
                 (wheel_half_length, -wheel_half_width),  # 左前
                 (-wheel_half_length, -wheel_half_width),  # 左后
-                (-wheel_half_length, wheel_half_width)   # 右后
+                (-wheel_half_length, wheel_half_width)  # 右后
             ]
 
             # 转换到世界坐标系，考虑车轮自身的转向角
@@ -1532,10 +1443,8 @@ class PygameSimulator:
         # 绘制车头方向
         head_x = vehicle.x + math.cos(vehicle.heading) * vehicle.length / 2
         head_y = vehicle.y + math.sin(vehicle.heading) * vehicle.length / 2
-        center_screen = (int(vehicle.x * scale + offset_x),
-                         int(vehicle.y * scale + offset_y))
-        head_screen = (int(head_x * scale + offset_x),
-                       int(head_y * scale + offset_y))
+        center_screen = (int(vehicle.x * scale + offset_x), int(vehicle.y * scale + offset_y))
+        head_screen = (int(head_x * scale + offset_x), int(head_y * scale + offset_y))
         pygame.draw.line(screen, (0, 0, 255), center_screen, head_screen, 2)
 
         # 绘制车灯
@@ -1544,8 +1453,8 @@ class PygameSimulator:
 
         # 前灯位置 (黄色)
         front_light_local = [
-            (vehicle.length/2 - light_radius, light_offset_y),  # 右前灯
-            (vehicle.length/2 - light_radius, -light_offset_y)  # 左前灯
+            (vehicle.length / 2 - light_radius, light_offset_y),  # 右前灯
+            (vehicle.length / 2 - light_radius, -light_offset_y)  # 左前灯
         ]
 
         for lx, ly in front_light_local:
@@ -1553,13 +1462,12 @@ class PygameSimulator:
             wy = vehicle.y + lx * sin_h + ly * cos_h
             sx = int(wx * scale + offset_x)
             sy = int(wy * scale + offset_y)
-            pygame.draw.circle(screen, (255, 255, 0),
-                               (sx, sy), int(light_radius * scale))
+            pygame.draw.circle(screen, (255, 255, 0), (sx, sy), int(light_radius * scale))
 
         # 后灯位置 (红色)
         rear_light_local = [
-            (-vehicle.length/2 + light_radius, light_offset_y),  # 右后灯
-            (-vehicle.length/2 + light_radius, -light_offset_y)  # 左后灯
+            (-vehicle.length / 2 + light_radius, light_offset_y),  # 右后灯
+            (-vehicle.length / 2 + light_radius, -light_offset_y)  # 左后灯
         ]
 
         for lx, ly in rear_light_local:
@@ -1567,8 +1475,7 @@ class PygameSimulator:
             wy = vehicle.y + lx * sin_h + ly * cos_h
             sx = int(wx * scale + offset_x)
             sy = int(wy * scale + offset_y)
-            pygame.draw.circle(screen, (255, 0, 0), (sx, sy),
-                               int(light_radius * scale))
+            pygame.draw.circle(screen, (255, 0, 0), (sx, sy), int(light_radius * scale))
 
         # 仅当show_sensors为True时绘制传感器
         if hasattr(vehicle, 'show_sensors') and vehicle.show_sensors:
@@ -1598,8 +1505,7 @@ class PygameSimulator:
                 view_y = pos[1] + math.sin(vehicle.heading) * view_length
                 view_sx = int(view_x * scale + offset_x)
                 view_sy = int(view_y * scale + offset_y)
-                pygame.draw.line(screen, color, (sx, sy),
-                                 (view_sx, view_sy), 1)
+                pygame.draw.line(screen, color, (sx, sy), (view_sx, view_sy), 1)
 
             # 绘制超声波雷达 (紫色)
             for sensor in sensor_positions['ultrasonic']:
@@ -1611,16 +1517,14 @@ class PygameSimulator:
                 pygame.draw.circle(screen, color, (sx, sy), 3)
 
                 # 计算超声波雷达方向 - 从车辆中心指向传感器
-                sensor_angle = math.atan2(
-                    pos[1] - vehicle.y, pos[0] - vehicle.x)
+                sensor_angle = math.atan2(pos[1] - vehicle.y, pos[0] - vehicle.x)
                 # 绘制超声波雷达探测范围
                 range_length = 1.0  # 探测范围1米
                 range_x = pos[0] + math.cos(sensor_angle) * range_length
                 range_y = pos[1] + math.sin(sensor_angle) * range_length
                 range_sx = int(range_x * scale + offset_x)
                 range_sy = int(range_y * scale + offset_y)
-                pygame.draw.line(screen, color, (sx, sy),
-                                 (range_sx, range_sy), 1)
+                pygame.draw.line(screen, color, (sx, sy), (range_sx, range_sy), 1)
 
             # 绘制IMU (绿色)
             if sensor_positions['imu']:
@@ -1630,8 +1534,7 @@ class PygameSimulator:
                 sy = int(pos[1] * scale + offset_y)
                 # 绘制IMU为一个小方块
                 imu_size = 4
-                pygame.draw.rect(screen, color, (sx - imu_size//2,
-                                                 sy - imu_size//2, imu_size, imu_size))
+                pygame.draw.rect(screen, color, (sx - imu_size // 2, sy - imu_size // 2, imu_size, imu_size))
 
             # 绘制GPS (浅绿色)
             if sensor_positions['gps']:
@@ -1641,10 +1544,8 @@ class PygameSimulator:
                 sy = int(pos[1] * scale + offset_y)
                 # 绘制GPS为一个十字形
                 cross_size = 5
-                pygame.draw.line(screen, color, (sx - cross_size,
-                                                 sy), (sx + cross_size, sy), 2)
-                pygame.draw.line(screen, color, (sx, sy - cross_size),
-                                 (sx, sy + cross_size), 2)
+                pygame.draw.line(screen, color, (sx - cross_size, sy), (sx + cross_size, sy), 2)
+                pygame.draw.line(screen, color, (sx, sy - cross_size), (sx, sy + cross_size), 2)
 
     def _draw_environment(self) -> None:
         """绘制环境"""
@@ -1655,10 +1556,8 @@ class PygameSimulator:
         border_width = 2
         pygame.draw.rect(self.screen, BLACK, (0, 0, self.width, border_width))
         pygame.draw.rect(self.screen, BLACK, (0, 0, border_width, self.height))
-        pygame.draw.rect(self.screen, BLACK, (0, self.height -
-                         border_width, self.width, border_width))
-        pygame.draw.rect(self.screen, BLACK, (self.width -
-                         border_width, 0, border_width, self.height))
+        pygame.draw.rect(self.screen, BLACK, (0, self.height - border_width, self.width, border_width))
+        pygame.draw.rect(self.screen, BLACK, (self.width - border_width, 0, border_width, self.height))
 
         # 绘制网格
         grid_size = 10 * self.scale  # 10米一格
@@ -1684,14 +1583,10 @@ class PygameSimulator:
                 radius = int(obstacle.radius * self.scale)
                 pygame.draw.circle(self.screen, BLACK, center, radius)
             elif hasattr(obstacle, 'width') and hasattr(obstacle, 'height'):  # 矩形障碍物
-                top_left = self.world_to_screen(
-                    obstacle.x - obstacle.width / 2,
-                    obstacle.y + obstacle.height / 2
-                )
+                top_left = self.world_to_screen(obstacle.x - obstacle.width / 2, obstacle.y + obstacle.height / 2)
                 rect_width = int(obstacle.width * self.scale)
                 rect_height = int(obstacle.height * self.scale)
-                pygame.draw.rect(
-                    self.screen, BLACK, (top_left[0], top_left[1], rect_width, rect_height))
+                pygame.draw.rect(self.screen, BLACK, (top_left[0], top_left[1], rect_width, rect_height))
 
     def _draw_path(self, path: List[Tuple[float, float]], color: Tuple[int, int, int] = BLUE, width: int = 2) -> None:
         """绘制路径"""
@@ -1713,8 +1608,7 @@ class PygameSimulator:
         if not self.vehicle.trajectory:
             return
 
-        screen_points = [self.world_to_screen(
-            x, y) for x, y in self.vehicle.trajectory]
+        screen_points = [self.world_to_screen(x, y) for x, y in self.vehicle.trajectory]
 
         # 绘制轨迹线
         if len(screen_points) > 1:
@@ -1927,16 +1821,15 @@ class PygameSimulator:
                             # 重置车辆位置
                             if self.follower.path:
                                 self.vehicle.x, self.vehicle.y = self.follower.path[0]
-                                self.vehicle.trajectory = [
-                                    (self.vehicle.x, self.vehicle.y)]
+                                self.vehicle.trajectory = [(self.vehicle.x, self.vehicle.y)]
                                 self.follower.current_target_idx = 0
                                 self.collision_detected = False  # 重置碰撞状态
                         elif event.key == pygame.K_c:
                             # 切换控制方法
-                            self.current_control_method = self.control_methods[(self.control_methods.index(
-                                self.current_control_method) + 1) % len(self.control_methods)]
-                            self.follower.set_control_method(
-                                self.current_control_method)
+                            self.current_control_method = self.control_methods[
+                                (self.control_methods.index(self.current_control_method) + 1) %
+                                len(self.control_methods)]
+                            self.follower.set_control_method(self.current_control_method)
                         elif event.key == pygame.K_t:
                             # 重新规划路径并重置车辆位置
                             if not self.paused:
@@ -1958,8 +1851,7 @@ class PygameSimulator:
                         print(self.message)
                     else:
                         # 计算控制输入
-                        throttle, brake, steer = self.follower.get_control(
-                            self.vehicle)
+                        throttle, brake, steer = self.follower.get_control(self.vehicle)
 
                         # 更新车辆状态
                         self.vehicle.update(throttle, brake, steer, dt)
@@ -1967,18 +1859,12 @@ class PygameSimulator:
                         # 记录数据
                         current_time = time.time() - (self.start_time or time.time())
                         self.simulation_data['time'].append(current_time)
-                        self.simulation_data['position_x'].append(
-                            self.vehicle.x)
-                        self.simulation_data['position_y'].append(
-                            self.vehicle.y)
-                        self.simulation_data['heading'].append(
-                            self.vehicle.heading)
-                        self.simulation_data['speed'].append(
-                            self.vehicle.v)
-                        self.simulation_data['steer_angle'].append(
-                            self.vehicle.steer_angle)
-                        self.simulation_data['acceleration'].append(
-                            self.vehicle.a)
+                        self.simulation_data['position_x'].append(self.vehicle.x)
+                        self.simulation_data['position_y'].append(self.vehicle.y)
+                        self.simulation_data['heading'].append(self.vehicle.heading)
+                        self.simulation_data['speed'].append(self.vehicle.v)
+                        self.simulation_data['steer_angle'].append(self.vehicle.steer_angle)
+                        self.simulation_data['acceleration'].append(self.vehicle.a)
 
                         # 检查是否到达终点
                         if self.follower.current_target_idx >= len(self.follower.path) - 1 and self.vehicle.v < 0.1:
@@ -2035,16 +1921,14 @@ class PygameSimulator:
             axs[0, 1].grid(True)
 
             # 绘制朝向
-            axs[1, 0].plot(results['time'], [math.degrees(h)
-                           for h in results['heading']])
+            axs[1, 0].plot(results['time'], [math.degrees(h) for h in results['heading']])
             axs[1, 0].set_title('车辆朝向')
             axs[1, 0].set_xlabel('时间 (s)')
             axs[1, 0].set_ylabel('朝向角度 (度)')
             axs[1, 0].grid(True)
 
             # 绘制转向角
-            axs[1, 1].plot(results['time'], [math.degrees(a)
-                           for a in results['steer_angle']])
+            axs[1, 1].plot(results['time'], [math.degrees(a) for a in results['steer_angle']])
             axs[1, 1].set_title('转向角')
             axs[1, 1].set_xlabel('时间 (s)')
             axs[1, 1].set_ylabel('转向角度 (度)')

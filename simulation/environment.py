@@ -1,6 +1,5 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-
 """
 环境定义模块
 
@@ -47,12 +46,7 @@ class Environment:
     提供环境表示、碰撞检测和可视化功能。
     """
 
-    def __init__(
-        self,
-        width: float = 100.0,
-        height: float = 100.0,
-        map_path: Optional[str] = None
-    ):
+    def __init__(self, width: float = 100.0, height: float = 100.0, map_path: Optional[str] = None):
         """
         初始化环境
 
@@ -87,7 +81,7 @@ class Environment:
         for obstacle in self.obstacles:
             if isinstance(obstacle, CircleObstacle):
                 # 计算点到圆心的距离
-                dist = ((x - obstacle.x) ** 2 + (y - obstacle.y) ** 2) ** 0.5
+                dist = ((x - obstacle.x)**2 + (y - obstacle.y)**2)**0.5
                 # 减去圆的半径得到到圆边界的距离
                 dist = max(0.0, dist - obstacle.radius)
                 min_dist = min(min_dist, dist)
@@ -108,20 +102,18 @@ class Environment:
                     min_dist = min(min_dist, max(0.0, dx))
                 else:
                     # 点在矩形的对角方向
-                    min_dist = min(min_dist, (dx * dx + dy * dy) ** 0.5)
+                    min_dist = min(min_dist, (dx * dx + dy * dy)**0.5)
 
         return min_dist
 
-    def add_obstacle(
-        self,
-        x: float,
-        y: float,
-        obstacle_type: str = "circle",
-        radius: Optional[float] = None,
-        width: Optional[float] = None,
-        height: Optional[float] = None,
-        angle: float = 0.0
-    ) -> None:
+    def add_obstacle(self,
+                     x: float,
+                     y: float,
+                     obstacle_type: str = "circle",
+                     radius: Optional[float] = None,
+                     width: Optional[float] = None,
+                     height: Optional[float] = None,
+                     angle: float = 0.0) -> None:
         """
         添加障碍物
 
@@ -137,18 +129,14 @@ class Environment:
         if obstacle_type == "circle" and radius is not None:
             self.obstacles.append(CircleObstacle(x=x, y=y, radius=radius))
         elif obstacle_type == "rectangle" and width is not None and height is not None:
-            self.obstacles.append(
-                RectangleObstacle(
-                    x=x, y=y,
-                    width=width,
-                    height=height,
-                    angle=angle
-                )
-            )
+            self.obstacles.append(RectangleObstacle(x=x, y=y, width=width, height=height, angle=angle))
         else:
             raise ValueError("无效的障碍物参数")
 
-    def check_collision(self, point: Tuple[float, float], vehicle_width: float = 0.0, vehicle_length: float = 0.0) -> bool:
+    def check_collision(self,
+                        point: Tuple[float, float],
+                        vehicle_width: float = 0.0,
+                        vehicle_length: float = 0.0) -> bool:
         """
         检查点是否与障碍物碰撞
 
@@ -175,26 +163,21 @@ class Environment:
         for obstacle in self.obstacles:
             if isinstance(obstacle, CircleObstacle):
                 # 圆形障碍物碰撞检测
-                dist = np.sqrt(
-                    (x - obstacle.x) ** 2 + (y - obstacle.y) ** 2
-                )
+                dist = np.sqrt((x - obstacle.x)**2 + (y - obstacle.y)**2)
                 if dist <= obstacle.radius:
                     return True
             else:
                 # 矩形障碍物碰撞检测（简化版，不考虑旋转）
-                if (abs(x - obstacle.x) <= obstacle.width / 2 and
-                        abs(y - obstacle.y) <= obstacle.height / 2):
+                if (abs(x - obstacle.x) <= obstacle.width / 2 and abs(y - obstacle.y) <= obstacle.height / 2):
                     return True
 
         return False
 
-    def check_segment_collision(
-        self,
-        start: Tuple[float, float],
-        end: Tuple[float, float],
-        vehicle_width: float = 0.0,
-        vehicle_length: float = 0.0
-    ) -> bool:
+    def check_segment_collision(self,
+                                start: Tuple[float, float],
+                                end: Tuple[float, float],
+                                vehicle_width: float = 0.0,
+                                vehicle_length: float = 0.0) -> bool:
         """
         检查线段是否与任意障碍物碰撞，考虑车辆尺寸
 
@@ -216,8 +199,7 @@ class Environment:
             for obstacle in self.obstacles:
                 if isinstance(obstacle, CircleObstacle):
                     # 创建圆形障碍物的几何表示
-                    circle = Point(obstacle.x, obstacle.y).buffer(
-                        obstacle.radius)
+                    circle = Point(obstacle.x, obstacle.y).buffer(obstacle.radius)
                     if line.intersects(circle):
                         return True
                 else:
@@ -226,12 +208,7 @@ class Environment:
                     x_max = obstacle.x + obstacle.width / 2
                     y_min = obstacle.y - obstacle.height / 2
                     y_max = obstacle.y + obstacle.height / 2
-                    rect = Polygon([
-                        (x_min, y_min),
-                        (x_max, y_min),
-                        (x_max, y_max),
-                        (x_min, y_max)
-                    ])
+                    rect = Polygon([(x_min, y_min), (x_max, y_min), (x_max, y_max), (x_min, y_max)])
                     if line.intersects(rect):
                         return True
         else:
@@ -255,16 +232,10 @@ class Environment:
                 cos_h = math.cos(heading)
                 sin_h = math.sin(heading)
 
-                corners = [
-                    (x + half_length * cos_h - half_width * sin_h,
-                     y + half_length * sin_h + half_width * cos_h),
-                    (x + half_length * cos_h + half_width * sin_h,
-                     y + half_length * sin_h - half_width * cos_h),
-                    (x - half_length * cos_h + half_width * sin_h,
-                     y - half_length * sin_h - half_width * cos_h),
-                    (x - half_length * cos_h - half_width * sin_h,
-                     y - half_length * sin_h + half_width * cos_h)
-                ]
+                corners = [(x + half_length * cos_h - half_width * sin_h, y + half_length * sin_h + half_width * cos_h),
+                           (x + half_length * cos_h + half_width * sin_h, y + half_length * sin_h - half_width * cos_h),
+                           (x - half_length * cos_h + half_width * sin_h, y - half_length * sin_h - half_width * cos_h),
+                           (x - half_length * cos_h - half_width * sin_h, y - half_length * sin_h + half_width * cos_h)]
 
                 vehicle_polygon = Polygon(corners)
 
@@ -272,8 +243,7 @@ class Environment:
                 for obstacle in self.obstacles:
                     if isinstance(obstacle, CircleObstacle):
                         # 圆形障碍物
-                        circle = Point(obstacle.x, obstacle.y).buffer(
-                            obstacle.radius)
+                        circle = Point(obstacle.x, obstacle.y).buffer(obstacle.radius)
                         if vehicle_polygon.intersects(circle):
                             return True
                     else:
@@ -286,12 +256,7 @@ class Environment:
                         # 考虑障碍物的旋转角度
                         if hasattr(obstacle, 'angle') and obstacle.angle != 0:
                             # 创建旋转后的矩形
-                            rect_corners = [
-                                (x_min, y_min),
-                                (x_max, y_min),
-                                (x_max, y_max),
-                                (x_min, y_max)
-                            ]
+                            rect_corners = [(x_min, y_min), (x_max, y_min), (x_max, y_max), (x_min, y_max)]
 
                             # 旋转矩形的角点
                             cos_angle = math.cos(-obstacle.angle)
@@ -306,18 +271,12 @@ class Environment:
                                 rx = tx * cos_angle - ty * sin_angle
                                 ry = tx * sin_angle + ty * cos_angle
                                 # 平移回原位置
-                                rotated_corners.append(
-                                    (rx + obstacle.x, ry + obstacle.y))
+                                rotated_corners.append((rx + obstacle.x, ry + obstacle.y))
 
                             obstacle_polygon = Polygon(rotated_corners)
                         else:
                             # 不旋转的矩形
-                            obstacle_polygon = Polygon([
-                                (x_min, y_min),
-                                (x_max, y_min),
-                                (x_max, y_max),
-                                (x_min, y_max)
-                            ])
+                            obstacle_polygon = Polygon([(x_min, y_min), (x_max, y_min), (x_max, y_max), (x_min, y_max)])
 
                         if vehicle_polygon.intersects(obstacle_polygon):
                             return True
@@ -387,21 +346,12 @@ class Environment:
             map_path: 地图文件路径
         """
         # 准备地图数据
-        map_data = {
-            'width': self.width,
-            'height': self.height,
-            'obstacles': []
-        }
+        map_data = {'width': self.width, 'height': self.height, 'obstacles': []}
 
         # 保存障碍物数据
         for obs in self.obstacles:
             if isinstance(obs, CircleObstacle):
-                obs_data = {
-                    'x': obs.x,
-                    'y': obs.y,
-                    'obstacle_type': 'circle',
-                    'radius': obs.radius
-                }
+                obs_data = {'x': obs.x, 'y': obs.y, 'obstacle_type': 'circle', 'radius': obs.radius}
             elif isinstance(obs, RectangleObstacle):
                 obs_data = {
                     'x': obs.x,
@@ -420,8 +370,7 @@ class Environment:
         import yaml
         try:
             with open(map_path, 'w', encoding='utf-8') as f:
-                yaml.dump(map_data, f, default_flow_style=False,
-                          allow_unicode=True)
+                yaml.dump(map_data, f, default_flow_style=False, allow_unicode=True)
         except Exception as e:
             print(f"保存地图失败: {e}")
 
@@ -429,13 +378,11 @@ class Environment:
         """绘制所有障碍物"""
         for obs in self.obstacles:
             if isinstance(obs, CircleObstacle):
-                circle = plt.Circle((obs.x, obs.y), obs.radius,
-                                    color='r', alpha=0.5)
+                circle = plt.Circle((obs.x, obs.y), obs.radius, color='r', alpha=0.5)
                 ax.add_patch(circle)
             elif isinstance(obs, RectangleObstacle):
                 from matplotlib.patches import Polygon
-                rect = Polygon(self._compute_corners(
-                    obs), closed=True, color='r', alpha=0.5)
+                rect = Polygon(self._compute_corners(obs), closed=True, color='r', alpha=0.5)
                 ax.add_patch(rect)
 
     def visualize(self, figsize: Tuple[int, int] = (10, 8)) -> None:
@@ -443,8 +390,7 @@ class Environment:
         fig, ax = plt.subplots(figsize=figsize)
 
         # 绘制边界
-        ax.plot([0, self.width, self.width, 0, 0],
-                [0, 0, self.height, self.height, 0], 'k-')
+        ax.plot([0, self.width, self.width, 0, 0], [0, 0, self.height, self.height, 0], 'k-')
 
         # 绘制障碍物
         self.plot_obstacles(ax)
@@ -460,11 +406,7 @@ class Environment:
 
         plt.show()
 
-    def visualize_path(
-        self,
-        path: List[Tuple[float, float]],
-        figsize: Tuple[int, int] = (10, 8)
-    ) -> None:
+    def visualize_path(self, path: List[Tuple[float, float]], figsize: Tuple[int, int] = (10, 8)) -> None:
         """
         可视化路径
 
@@ -475,8 +417,7 @@ class Environment:
         fig, ax = plt.subplots(figsize=figsize)
 
         # 绘制边界
-        ax.plot([0, self.width, self.width, 0, 0],
-                [0, 0, self.height, self.height, 0], 'k-')
+        ax.plot([0, self.width, self.width, 0, 0], [0, 0, self.height, self.height, 0], 'k-')
 
         # 绘制障碍物
         self.plot_obstacles(ax)
@@ -516,12 +457,7 @@ class Environment:
         obstacles_dict = []
         for obs in self.obstacles:
             if isinstance(obs, CircleObstacle):
-                obstacles_dict.append({
-                    'type': 'circle',
-                    'x': obs.x,
-                    'y': obs.y,
-                    'radius': obs.radius
-                })
+                obstacles_dict.append({'type': 'circle', 'x': obs.x, 'y': obs.y, 'radius': obs.radius})
             else:
                 obstacles_dict.append({
                     'type': 'rectangle',
@@ -533,11 +469,7 @@ class Environment:
                 })
 
         # 保存环境配置
-        env_dict = {
-            'width': self.width,
-            'height': self.height,
-            'obstacles': obstacles_dict
-        }
+        env_dict = {'width': self.width, 'height': self.height, 'obstacles': obstacles_dict}
 
         with open(filepath, 'w') as f:
             json.dump(env_dict, f, indent=2)
@@ -559,29 +491,19 @@ class Environment:
             env_dict = json.load(f)
 
         # 创建环境
-        env = cls(
-            width=env_dict['width'],
-            height=env_dict['height']
-        )
+        env = cls(width=env_dict['width'], height=env_dict['height'])
 
         # 添加障碍物
         for obs_dict in env_dict['obstacles']:
             if obs_dict['type'] == 'circle':
-                env.add_obstacle(
-                    x=obs_dict['x'],
-                    y=obs_dict['y'],
-                    obstacle_type='circle',
-                    radius=obs_dict['radius']
-                )
+                env.add_obstacle(x=obs_dict['x'], y=obs_dict['y'], obstacle_type='circle', radius=obs_dict['radius'])
             else:
-                env.add_obstacle(
-                    x=obs_dict['x'],
-                    y=obs_dict['y'],
-                    obstacle_type='rectangle',
-                    width=obs_dict['width'],
-                    height=obs_dict['height'],
-                    angle=obs_dict.get('angle', 0.0)
-                )
+                env.add_obstacle(x=obs_dict['x'],
+                                 y=obs_dict['y'],
+                                 obstacle_type='rectangle',
+                                 width=obs_dict['width'],
+                                 height=obs_dict['height'],
+                                 angle=obs_dict.get('angle', 0.0))
 
         return env
 
@@ -615,23 +537,19 @@ if __name__ == "__main__":
 
     # 添加圆形障碍物
     for _ in range(10):
-        env.add_obstacle(
-            x=np.random.uniform(10, 90),
-            y=np.random.uniform(10, 90),
-            obstacle_type="circle",
-            radius=np.random.uniform(2, 8)
-        )
+        env.add_obstacle(x=np.random.uniform(10, 90),
+                         y=np.random.uniform(10, 90),
+                         obstacle_type="circle",
+                         radius=np.random.uniform(2, 8))
 
     # 添加矩形障碍物
     for _ in range(5):
-        env.add_obstacle(
-            x=np.random.uniform(10, 90),
-            y=np.random.uniform(10, 90),
-            obstacle_type="rectangle",
-            width=np.random.uniform(5, 15),
-            height=np.random.uniform(5, 15),
-            angle=np.random.uniform(0, 2 * np.pi)
-        )
+        env.add_obstacle(x=np.random.uniform(10, 90),
+                         y=np.random.uniform(10, 90),
+                         obstacle_type="rectangle",
+                         width=np.random.uniform(5, 15),
+                         height=np.random.uniform(5, 15),
+                         angle=np.random.uniform(0, 2 * np.pi))
 
     # 可视化环境
     env.visualize()
@@ -644,6 +562,7 @@ if __name__ == "__main__":
 
 
 class Obstacle:
+
     def __init__(self, x, y, color=(0, 0, 0, 255), is_filled=True, line_width=2):
         self.x = x
         self.y = y
@@ -659,10 +578,12 @@ class Obstacle:
         """检查线段是否与障碍物碰撞"""
         raise NotImplementedError("子类必须实现此方法")
 
+
 # 矩形障碍物
 
 
 class RectangleObstacle(Obstacle):
+
     def __init__(self, x, y, width, height, angle=0.0, color=(0, 0, 0, 255), is_filled=True, line_width=2):
         super().__init__(x, y, color, is_filled, line_width)
         self.width = width
@@ -762,10 +683,12 @@ class RectangleObstacle(Obstacle):
         # 如果ua和ub都在[0,1]范围内，则线段相交
         return (0 <= ua <= 1) and (0 <= ub <= 1)
 
+
 # 圆形障碍物
 
 
 class CircleObstacle(Obstacle):
+
     def __init__(self, x, y, radius, color=(0, 0, 0, 255), is_filled=True, line_width=2):
         super().__init__(x, y, color, is_filled, line_width)
         self.radius = radius
@@ -784,7 +707,7 @@ class CircleObstacle(Obstacle):
             return False
 
         # 计算点到圆心的距离
-        distance = math.sqrt((x - self.x) ** 2 + (y - self.y) ** 2)
+        distance = math.sqrt((x - self.x)**2 + (y - self.y)**2)
 
         # 如果距离小于等于半径，则点在圆内
         return distance <= self.radius
@@ -800,7 +723,7 @@ class CircleObstacle(Obstacle):
         dy = y2 - y1
 
         # 计算线段长度的平方
-        length_squared = dx ** 2 + dy ** 2
+        length_squared = dx**2 + dy**2
 
         # 如果线段长度为0，则检查端点是否在圆内
         if length_squared == 0:
@@ -818,14 +741,14 @@ class CircleObstacle(Obstacle):
         closest_y = y1 + t * dy
 
         # 计算最接近点到圆心的距离
-        distance = math.sqrt((closest_x - self.x) ** 2 +
-                             (closest_y - self.y) ** 2)
+        distance = math.sqrt((closest_x - self.x)**2 + (closest_y - self.y)**2)
 
         # 如果距离小于等于半径，则线段与圆相交
         return distance <= self.radius
 
 
 class DynamicObstacle:
+
     def __init__(self, x0, y0, vx, vy, width, height):
         """初始化动态障碍物
         参数:
@@ -865,10 +788,10 @@ class Vehicle(RectangleObstacle):
         # 传感器配置
         self.sensors = {
             'fisheye_cameras': [],  # 环视摄像头 (黄色)
-            'front_camera': None,   # 前视摄像头 (红色)
-            'ultrasonic': [],       # 超声波雷达 (紫色)
-            'imu': None,            # 消费级IMU (绿色)
-            'gps': None             # 消费级GPS (绿色)
+            'front_camera': None,  # 前视摄像头 (红色)
+            'ultrasonic': [],  # 超声波雷达 (紫色)
+            'imu': None,  # 消费级IMU (绿色)
+            'gps': None  # 消费级GPS (绿色)
         }
 
         # 初始化传感器位置
@@ -882,10 +805,10 @@ class Vehicle(RectangleObstacle):
         # 环视摄像头 (4个，黄色)
         # 车头/车尾各2个，左/右后视镜各1个
         fisheye_positions = [
-            (half_length, 0),           # 车头中央
-            (-half_length, 0),          # 车尾中央
-            (0, half_width),            # 右侧中央
-            (0, -half_width)            # 左侧中央
+            (half_length, 0),  # 车头中央
+            (-half_length, 0),  # 车尾中央
+            (0, half_width),  # 右侧中央
+            (0, -half_width)  # 左侧中央
         ]
 
         for pos in fisheye_positions:
@@ -960,9 +883,9 @@ class Vehicle(RectangleObstacle):
         # 局部坐标系中的四个角
         corners_local = [
             (-half_length, -half_width),  # 左下
-            (half_length, -half_width),   # 右下
-            (half_length, half_width),    # 右上
-            (-half_length, half_width)    # 左上
+            (half_length, -half_width),  # 右下
+            (half_length, half_width),  # 右上
+            (-half_length, half_width)  # 左上
         ]
 
         # 将局部坐标转换为全局坐标
@@ -989,62 +912,41 @@ class Vehicle(RectangleObstacle):
         cos_h = math.cos(self.orientation)
         sin_h = math.sin(self.orientation)
 
-        sensor_positions = {
-            'fisheye_cameras': [],
-            'front_camera': None,
-            'ultrasonic': [],
-            'imu': None,
-            'gps': None
-        }
+        sensor_positions = {'fisheye_cameras': [], 'front_camera': None, 'ultrasonic': [], 'imu': None, 'gps': None}
 
         # 环视摄像头
         for camera in self.sensors['fisheye_cameras']:
             lx, ly = camera['local_pos']
             x = self.x + lx * cos_h - ly * sin_h
             y = self.y + lx * sin_h + ly * cos_h
-            sensor_positions['fisheye_cameras'].append({
-                'pos': (x, y),
-                'color': camera['color']
-            })
+            sensor_positions['fisheye_cameras'].append({'pos': (x, y), 'color': camera['color']})
 
         # 前视摄像头
         if self.sensors['front_camera']:
             lx, ly = self.sensors['front_camera']['local_pos']
             x = self.x + lx * cos_h - ly * sin_h
             y = self.y + lx * sin_h + ly * cos_h
-            sensor_positions['front_camera'] = {
-                'pos': (x, y),
-                'color': self.sensors['front_camera']['color']
-            }
+            sensor_positions['front_camera'] = {'pos': (x, y), 'color': self.sensors['front_camera']['color']}
 
         # 超声波雷达
         for sensor in self.sensors['ultrasonic']:
             lx, ly = sensor['local_pos']
             x = self.x + lx * cos_h - ly * sin_h
             y = self.y + lx * sin_h + ly * cos_h
-            sensor_positions['ultrasonic'].append({
-                'pos': (x, y),
-                'color': sensor['color']
-            })
+            sensor_positions['ultrasonic'].append({'pos': (x, y), 'color': sensor['color']})
 
         # IMU
         if self.sensors['imu']:
             lx, ly = self.sensors['imu']['local_pos']
             x = self.x + lx * cos_h - ly * sin_h
             y = self.y + lx * sin_h + ly * cos_h
-            sensor_positions['imu'] = {
-                'pos': (x, y),
-                'color': self.sensors['imu']['color']
-            }
+            sensor_positions['imu'] = {'pos': (x, y), 'color': self.sensors['imu']['color']}
 
         # GPS
         if self.sensors['gps']:
             lx, ly = self.sensors['gps']['local_pos']
             x = self.x + lx * cos_h - ly * sin_h
             y = self.y + lx * sin_h + ly * cos_h
-            sensor_positions['gps'] = {
-                'pos': (x, y),
-                'color': self.sensors['gps']['color']
-            }
+            sensor_positions['gps'] = {'pos': (x, y), 'color': self.sensors['gps']['color']}
 
         return sensor_positions
