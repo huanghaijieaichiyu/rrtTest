@@ -1,6 +1,5 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-
 """
 RRT基础算法实现
 
@@ -17,17 +16,39 @@ from typing import List, Tuple, Optional
 
 
 class Node:
-    """
-    RRT树中的节点类
-    """
+    """路径规划中的节点"""
 
     def __init__(self, x: float, y: float):
         self.x = x
         self.y = y
-        self.path_x: List[float] = []  # 从根节点到当前节点的路径x坐标
-        self.path_y: List[float] = []  # 从根节点到当前节点的路径y坐标
-        self.parent: Optional['Node'] = None  # 父节点
-        self.cost: float = 0.0  # 从起点到该节点的代价
+        self.parent = None
+        self.cost = 0.0  # 从起点到该节点的代价
+
+    def __iter__(self):
+        """使节点可迭代，返回x和y坐标"""
+        yield self.x
+        yield self.y
+
+    def __getitem__(self, index: int) -> float:
+        """支持索引访问，0返回x坐标，1返回y坐标"""
+        if index == 0:
+            return self.x
+        elif index == 1:
+            return self.y
+        else:
+            raise IndexError("Node只支持索引0(x坐标)和1(y坐标)")
+
+    def __len__(self) -> int:
+        """返回节点的维度（2）"""
+        return 2
+
+    def to_tuple(self) -> tuple:
+        """将节点转换为元组表示"""
+        return (self.x, self.y)
+
+    def distance(self, other: 'Node') -> float:
+        """计算到另一个节点的欧氏距离"""
+        return ((self.x - other.x)**2 + (self.y - other.y)**2)**0.5
 
 
 class RRT:
@@ -36,16 +57,16 @@ class RRT:
     """
 
     def __init__(
-        self,
-        start: Tuple[float, float],
-        goal: Tuple[float, float],
-        env,
-        step_size: float = 1.0,
-        max_iterations: int = 1000,
-        goal_sample_rate: float = 0.05,
-        search_radius: float = 50.0,
-        vehicle_width: float = 1.8,  # 添加车辆宽度参数
-        vehicle_length: float = 4.5  # 添加车辆长度参数
+            self,
+            start: Tuple[float, float],
+            goal: Tuple[float, float],
+            env,
+            step_size: float = 1.0,
+            max_iterations: int = 1000,
+            goal_sample_rate: float = 0.05,
+            search_radius: float = 50.0,
+            vehicle_width: float = 1.8,  # 添加车辆宽度参数
+            vehicle_length: float = 4.5  # 添加车辆长度参数
     ):
         """
         初始化RRT路径规划器
@@ -148,10 +169,7 @@ class RRT:
 
     def _get_nearest_node_index(self, node: Node) -> int:
         """找到距离给定节点最近的节点索引"""
-        distances = [
-            (node.x - n.x) ** 2 + (node.y - n.y) ** 2
-            for n in self.node_list
-        ]
+        distances = [(node.x - n.x)**2 + (node.y - n.y)**2 for n in self.node_list]
         return int(np.argmin(distances))
 
     def _steer(self, from_node: Node, to_node: Node) -> Node:
@@ -183,8 +201,7 @@ class RRT:
         # 更新代价
         new_node.cost = from_node.cost + self.step_size
 
-        print(
-            f"扩展节点: 从 ({from_node.x:.2f}, {from_node.y:.2f}) 到 ({new_x:.2f}, {new_y:.2f})")
+        print(f"扩展节点: 从 ({from_node.x:.2f}, {from_node.y:.2f}) 到 ({new_x:.2f}, {new_y:.2f})")
 
         return new_node
 
@@ -193,21 +210,15 @@ class RRT:
         # 实际实现中，应该调用环境的碰撞检测功能
         # 这里假设环境有一个check_segment方法
         result = self._check_segment(node1, node2)
-        print(
-            f"碰撞检测: 从 ({node1.x:.2f}, {node1.y:.2f}) 到 ({node2.x:.2f}, {node2.y:.2f}) - {'无碰撞' if result else '有碰撞'}")
+        print(f"碰撞检测: 从 ({node1.x:.2f}, {node1.y:.2f}) 到 ({node2.x:.2f}, {node2.y:.2f}) - {'无碰撞' if result else '有碰撞'}")
         return result
 
     def _check_segment(self, node1: Node, node2: Node) -> bool:
         """检查两点之间的线段是否无碰撞，考虑车辆尺寸"""
         # 调用环境的碰撞检测，传入车辆尺寸参数
-        print(
-            f"DEBUG RRT: 检查线段 ({node1.x:.2f}, {node1.y:.2f}) -> ({node2.x:.2f}, {node2.y:.2f})")
-        result = not self.env.check_segment_collision(
-            (node1.x, node1.y),
-            (node2.x, node2.y),
-            self.vehicle_width,
-            self.vehicle_length
-        )
+        print(f"DEBUG RRT: 检查线段 ({node1.x:.2f}, {node1.y:.2f}) -> ({node2.x:.2f}, {node2.y:.2f})")
+        result = not self.env.check_segment_collision((node1.x, node1.y),
+                                                      (node2.x, node2.y), self.vehicle_width, self.vehicle_length)
         print(f"DEBUG RRT: 线段碰撞检测结果: {'无碰撞' if result else '有碰撞'}")
         return result
 
@@ -224,10 +235,7 @@ class RRT:
         self.goal.path_y = node.path_y.copy()
         self.goal.path_x.append(self.goal.x)
         self.goal.path_y.append(self.goal.y)
-        self.goal.cost = node.cost + np.hypot(
-            self.goal.x - node.x,
-            self.goal.y - node.y
-        )
+        self.goal.cost = node.cost + np.hypot(self.goal.x - node.x, self.goal.y - node.y)
         self.node_list.append(self.goal)
 
     def _extract_path(self) -> List[Tuple[float, float]]:
@@ -248,10 +256,7 @@ class RRT:
     def _plot_current_tree(self, iteration: int) -> None:
         """可视化当前搜索树（用于调试和展示）"""
         plt.clf()
-        plt.gcf().canvas.mpl_connect(
-            'key_release_event',
-            lambda event: [exit(0) if event.key == 'escape' else None]
-        )
+        plt.gcf().canvas.mpl_connect('key_release_event', lambda event: [exit(0) if event.key == 'escape' else None])
 
         # 绘制障碍物（如果环境提供了这个功能）
         if hasattr(self.env, 'plot_obstacles'):
@@ -264,11 +269,7 @@ class RRT:
         # 绘制搜索树
         for node in self.node_list:
             if node.parent:
-                plt.plot(
-                    [node.x, node.parent.x],
-                    [node.y, node.parent.y],
-                    "-g"
-                )
+                plt.plot([node.x, node.parent.x], [node.y, node.parent.y], "-g")
 
         # 设置坐标轴范围
         plt.axis((self.min_x, self.max_x, self.min_y, self.max_y))
@@ -291,12 +292,7 @@ class RRT:
         # 绘制搜索树
         for node in self.node_list:
             if node.parent:
-                plt.plot(
-                    [node.x, node.parent.x],
-                    [node.y, node.parent.y],
-                    "-g",
-                    alpha=0.3
-                )
+                plt.plot([node.x, node.parent.x], [node.y, node.parent.y], "-g", alpha=0.3)
 
         # 绘制最终路径
         if self.path:
@@ -310,11 +306,7 @@ class RRT:
         plt.legend()
         plt.show()
 
-    def check_line_collision(
-        self,
-        start: Tuple[float, float],
-        end: Tuple[float, float]
-    ) -> bool:
+    def check_line_collision(self, start: Tuple[float, float], end: Tuple[float, float]) -> bool:
         """检查线段是否与障碍物碰撞"""
         raise NotImplementedError("子类必须实现此方法")
 
@@ -328,21 +320,10 @@ if __name__ == "__main__":
 
     # 添加一些障碍物
     for _ in range(10):
-        env.add_obstacle(
-            np.random.uniform(10, 90),
-            np.random.uniform(10, 90),
-            radius=5.0
-        )
+        env.add_obstacle(np.random.uniform(10, 90), np.random.uniform(10, 90), radius=5.0)
 
     # 创建RRT规划器
-    rrt = RRT(
-        start=(10, 10),
-        goal=(90, 90),
-        env=env,
-        step_size=5.0,
-        max_iterations=1000,
-        goal_sample_rate=0.1
-    )
+    rrt = RRT(start=(10, 10), goal=(90, 90), env=env, step_size=5.0, max_iterations=1000, goal_sample_rate=0.1)
 
     # 规划路径
     path = rrt.plan()
