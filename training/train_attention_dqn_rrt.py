@@ -7,13 +7,6 @@
 """
 
 import os
-import sys
-
-# 添加项目根目录到路径
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
-
 import argparse
 import random
 import numpy as np
@@ -113,8 +106,8 @@ def pretrain_model(model: AttentionDQNRRT,
 
         # 保存检查点
         if (epoch + 1) % 2 == 0:  # 更频繁地保存检查点
-            os.makedirs("checkpoints", exist_ok=True)
-            checkpoint_path = f"checkpoints/attention_dqn_rrt_epoch_{epoch+1}.pt"
+            os.makedirs("models", exist_ok=True)
+            checkpoint_path = f"models/attention_dqn_rrt_epoch_{epoch+1}.pt"
             model.save_model(checkpoint_path)
             print(f"保存检查点到 {checkpoint_path}")
 
