@@ -169,6 +169,13 @@ class ReplayBuffer:
         self.buffer = deque(maxlen=capacity)
 
     def push(self, state, action, reward, next_state, done):
+        """添加经验到缓冲区，确保数据不在GPU上"""
+        # 确保state和next_state是numpy数组而不是cuda张量
+        if isinstance(state, torch.Tensor):
+            state = state.cpu().numpy()
+        if isinstance(next_state, torch.Tensor):
+            next_state = next_state.cpu().numpy()
+        # 添加到缓冲区
         self.buffer.append((state, action, reward, next_state, done))
 
     def sample(self, batch_size: int):
@@ -196,7 +203,8 @@ class AttentionDQNRRT(RRTStar):
                  buffer_capacity=10000,
                  batch_size=64,
                  hidden_dim=256,
-                 prediction_horizon=5):
+                 prediction_horizon=5,
+                 model_path=None):
         """
         使用深度强化学习和注意力机制增强的RRT*算法
 
@@ -216,6 +224,7 @@ class AttentionDQNRRT(RRTStar):
             batch_size: 批量大小
             hidden_dim: 隐藏层维度
             prediction_horizon: 预测时间步长
+            model_path: 预训练模型路径，如果提供则加载模型
         """
         # 确保max_iterations是整数
         max_iterations = int(max_iterations)
@@ -279,8 +288,20 @@ class AttentionDQNRRT(RRTStar):
         self.path_history: List[Node] = []
         self.obstacle_history: List[List[Node]] = []
 
-    def get_state(self, node: Node) -> np.ndarray:
-        """获取增强的状态表示"""
+        # 如果提供了模型路径，加载预训练模型
+        if model_path:
+            try:
+                self.load_model(model_path)
+                print(f"成功加载预训练模型: {model_path}")
+                # 降低探索率，更多依赖学习到的策略
+                self.epsilon = 0.05
+            except Exception as e:
+                print(f"加载模型失败: {e}")
+                print("将使用随机初始化的模型")
+
+    def get_state(self, node: Node) -> torch.Tensor:
+        """获取增强的状态表示，使用torch加速计算"""
+        # 将基本数据转换为tensor
         x, y = node.x, node.y
         goal_x, goal_y = self.goal_node.x, self.goal_node.y
 
@@ -288,9 +309,13 @@ class AttentionDQNRRT(RRTStar):
         k = 3
         nearest_obstacles = self.get_k_nearest_obstacles(node, k)
 
-        # 计算到目标的距离和角度
-        dist_to_goal = np.hypot(goal_x - x, goal_y - y)
-        angle_to_goal = np.arctan2(goal_y - y, goal_x - x)
+        # 计算到目标的距离和角度 - 使用torch
+        pos = torch.tensor([x, y], device=self.device, dtype=torch.float32)
+        goal_pos = torch.tensor([goal_x, goal_y], device=self.device, dtype=torch.float32)
+        diff = goal_pos - pos
+
+        dist_to_goal = torch.norm(diff)
+        angle_to_goal = torch.atan2(diff[1], diff[0])
 
         # 计算路径历史特征
         path_features = self.compute_path_features(node)
@@ -298,25 +323,28 @@ class AttentionDQNRRT(RRTStar):
         # 计算障碍物相对位置和距离
         obstacle_features = []
         for obs in nearest_obstacles:
-            rel_x = obs.x - x
-            rel_y = obs.y - y
-            dist = np.hypot(rel_x, rel_y)
-            angle = np.arctan2(rel_y, rel_x)
-            obstacle_features.extend([rel_x, rel_y, dist, angle])
+            # 使用torch计算相对位置和距离
+            obs_pos = torch.tensor([obs.x, obs.y], device=self.device, dtype=torch.float32)
+            rel_pos = obs_pos - pos
+            dist = torch.norm(rel_pos)
+            angle = torch.atan2(rel_pos[1], rel_pos[0])
+
+            # 转换为numpy以便于构建特征向量
+            obstacle_features.extend([rel_pos[0].item(), rel_pos[1].item(), dist.item(), angle.item()])
 
         # 如果障碍物数量不足，用零填充
         while len(obstacle_features) < 12:  # 3个障碍物，每个4个特征
             obstacle_features.extend([0.0, 0.0, 0.0, 0.0])
 
         # 构建状态向量
-        state = np.array(
+        state_np = np.array(
             [
                 x,
                 y,  # 当前位置 (2)
                 goal_x,
                 goal_y,  # 目标位置 (2)
-                dist_to_goal,  # 到目标距离 (1)
-                angle_to_goal,  # 到目标角度 (1)
+                dist_to_goal.item(),  # 到目标距离 (1)
+                angle_to_goal.item(),  # 到目标角度 (1)
                 self.vehicle_width,  # 车辆宽度 (1)
                 self.vehicle_length,  # 车辆长度 (1)
                 *path_features,  # 路径历史特征 (4)
@@ -325,34 +353,35 @@ class AttentionDQNRRT(RRTStar):
             dtype=np.float32)
 
         # 归一化状态
-        state = self._normalize_state(state)
-        return state
+        state = self._normalize_state(state_np)
+
+        # 转换为torch张量并返回
+        return torch.tensor(state, device=self.device, dtype=torch.float32)
 
     def _normalize_state(self, state: np.ndarray) -> np.ndarray:
-        """归一化状态向量"""
+        """归一化状态向量，使用numpy（后续可以转为torch实现）"""
+        # 创建tensor副本进行归一化
+        max_dist = np.hypot(self.env.width, self.env.height)
+        max_curvature = 1.0 / min(self.vehicle_length, self.vehicle_width)
+
         # 位置归一化（基于环境大小）
         state[0] /= self.env.width
         state[1] /= self.env.height
         state[2] /= self.env.width
         state[3] /= self.env.height
 
-        # 距离归一化（基于环境对角线长度）
-        max_dist = np.hypot(self.env.width, self.env.height)
+        # 距离归一化
         state[4] /= max_dist
 
-        # 角度已经是归一化的（-π到π）
-        # 车辆尺寸归一化（基于环境大小）
+        # 车辆尺寸归一化
         state[6] /= self.env.width
         state[7] /= self.env.height
 
         # 路径特征归一化
-        # 距离
         state[8] /= max_dist
-        # 角度已经是归一化的
-        # 曲率归一化（假设最大曲率为1/min(车长,车宽)）
-        max_curvature = 1.0 / min(self.vehicle_length, self.vehicle_width)
+        # 曲率归一化
         state[10] /= max_curvature
-        # 路径长度归一化（基于最大迭代次数）
+        # 路径长度归一化
         state[11] /= self.max_iterations
 
         # 障碍物特征归一化
@@ -362,15 +391,20 @@ class AttentionDQNRRT(RRTStar):
             state[i + 1] /= self.env.height
             # 距离
             state[i + 2] /= max_dist
-            # 角度已经是归一化的
 
         return state
 
     def get_k_nearest_obstacles(self, node: Node, k: int) -> List[Node]:
-        """获取k个最近的障碍物"""
+        """获取k个最近的障碍物，使用torch加速计算"""
         obstacles = []
+
+        # 将当前节点转换为张量
+        node_tensor = torch.tensor([node.x, node.y], device=self.device, dtype=torch.float32)
+
         for obs in self.env.obstacles:
-            dist = np.hypot(node.x - obs.x, node.y - obs.y)
+            # 使用torch计算距离
+            obs_tensor = torch.tensor([obs.x, obs.y], device=self.device, dtype=torch.float32)
+            dist = torch.norm(node_tensor - obs_tensor).item()
             obstacles.append((Node(obs.x, obs.y), dist))
 
         # 按距离排序并返回前k个
@@ -378,49 +412,67 @@ class AttentionDQNRRT(RRTStar):
         return [obs[0] for obs in obstacles[:k]]
 
     def compute_path_features(self, node: Node) -> np.ndarray:
-        """计算路径相关特征"""
+        """计算路径相关特征，使用torch加速计算"""
         if not self.path_history:
             return np.zeros(4)
 
+        # 转换当前节点为tensor
+        node_tensor = torch.tensor([node.x, node.y], device=self.device, dtype=torch.float32)
+
         # 计算与历史路径的关系
         min_dist = float('inf')
-        min_angle = 0
+        min_angle = 0.0
 
         for path_point in self.path_history[-10:]:  # 只使用最近的10个点
-            dist = np.hypot(node.x - path_point.x, node.y - path_point.y)
+            path_point_tensor = torch.tensor([path_point.x, path_point.y], device=self.device, dtype=torch.float32)
+            rel_pos = path_point_tensor - node_tensor
+            dist = torch.norm(rel_pos).item()
+
             if dist < min_dist:
                 min_dist = dist
-                min_angle = np.arctan2(path_point.y - node.y, path_point.x - node.x)
+                min_angle = torch.atan2(rel_pos[1], rel_pos[0]).item()
 
         # 计算路径曲率
         if len(self.path_history) >= 3:
             p1, p2, p3 = self.path_history[-3:]
             curvature = self.compute_curvature(p1, p2, p3)
         else:
-            curvature = 0
+            curvature = 0.0
 
         return np.array([min_dist, min_angle, curvature, len(self.path_history)])
 
     def compute_curvature(self, p1: Node, p2: Node, p3: Node) -> float:
-        """计算三点曲率"""
+        """计算三点曲率，使用torch加速计算"""
         try:
-            # 使用外接圆半径的倒数作为曲率
-            a = np.hypot(p2.x - p1.x, p2.y - p1.y)
-            b = np.hypot(p3.x - p2.x, p3.y - p2.y)
-            c = np.hypot(p3.x - p1.x, p3.y - p1.y)
+            # 将点坐标转换为tensor
+            p1_tensor = torch.tensor([p1.x, p1.y], device=self.device, dtype=torch.float32)
+            p2_tensor = torch.tensor([p2.x, p2.y], device=self.device, dtype=torch.float32)
+            p3_tensor = torch.tensor([p3.x, p3.y], device=self.device, dtype=torch.float32)
 
-            s = (a + b + c) / 2
-            area = np.sqrt(s * (s - a) * (s - b) * (s - c))
+            # 计算边长
+            a = torch.norm(p2_tensor - p1_tensor)
+            b = torch.norm(p3_tensor - p2_tensor)
+            c = torch.norm(p3_tensor - p1_tensor)
 
-            if area > 0:
-                return 4 * area / (a * b * c)
-            return 0
+            # 使用Heron公式计算面积
+            s = (a + b + c) / 2.0
+
+            # 添加数值稳定性：确保s*(s-a)*(s-b)*(s-c) > 0
+            area_squared = s * (s - a) * (s - b) * (s - c)
+
+            # 安全处理面积计算
+            if area_squared > 1e-10:  # 避免接近零的值
+                area = torch.sqrt(area_squared)
+                curvature = 4 * area / (a * b * c)
+                return curvature.item()
+
+            return 0.0
         except Exception as e:
             print(f"计算曲率时出错: {e}")
-            return 0
+            return 0.0
 
     def predict_obstacle_motion(self, obstacle_history: List[Node]) -> np.ndarray:
-        """预测障碍物运动"""
+        """预测障碍物运动，确保GPU到CPU的安全转换"""
         try:
             if len(obstacle_history) < self.prediction_horizon:
                 return np.zeros(2)  # 返回静态位置
@@ -446,60 +498,91 @@ class AttentionDQNRRT(RRTStar):
             with torch.no_grad():
                 prediction = self.prediction_net(sequence)
 
+            # 确保结果在CPU上
             return prediction.cpu().numpy()[0][:2]  # 只返回位置预测，不返回速度预测
         except Exception as e:
             print(f"预测障碍物运动出错: {e}")
             return np.zeros(2)  # 出错时返回静态位置
 
     def get_reward(self, new_node: Node, collision: bool) -> float:
-        """增强的奖励计算，考虑停车动作的合理性"""
+        """增强的奖励计算，考虑停车动作的合理性，使用torch加速计算"""
         try:
             if collision:
                 return -100.0
 
+            # 转换节点为tensors
+            new_node_tensor = torch.tensor([new_node.x, new_node.y], device=self.device, dtype=torch.float32)
+            goal_tensor = torch.tensor([self.goal_node.x, self.goal_node.y], device=self.device, dtype=torch.float32)
+
             # 基础距离奖励
-            dist_to_goal = np.hypot(new_node.x - self.goal_node.x, new_node.y - self.goal_node.y)
+            diff = goal_tensor - new_node_tensor
+            dist_to_goal = torch.norm(diff)
             dist_reward = -dist_to_goal * 0.1
 
             # 方向奖励：鼓励车辆朝向目标方向
+            direction_reward = torch.tensor(0.0, device=self.device)
             if len(self.path_history) >= 2:
                 prev_node = self.path_history[-2]
-                current_direction = np.arctan2(new_node.y - prev_node.y, new_node.x - prev_node.x)
-                goal_direction = np.arctan2(self.goal_node.y - new_node.y, self.goal_node.x - new_node.x)
-                angle_diff = abs(current_direction - goal_direction)
-                angle_diff = min(angle_diff, 2 * np.pi - angle_diff)
+                prev_node_tensor = torch.tensor([prev_node.x, prev_node.y], device=self.device, dtype=torch.float32)
+
+                # 计算当前方向
+                dir_vec = new_node_tensor - prev_node_tensor
+                current_direction = torch.atan2(dir_vec[1], dir_vec[0])
+
+                # 计算目标方向
+                goal_dir = goal_tensor - new_node_tensor
+                goal_direction = torch.atan2(goal_dir[1], goal_dir[0])
+
+                # 计算角度差
+                angle_diff = torch.abs(current_direction - goal_direction)
+                angle_diff = torch.min(angle_diff, 2 * torch.pi - angle_diff)
+
                 direction_reward = -angle_diff * 10.0
-            else:
-                direction_reward = 0.0
 
             # 安全距离奖励
-            safety_reward = 0
+            safety_reward = torch.tensor(0.0, device=self.device)
             for obs in self.get_k_nearest_obstacles(new_node, 3):
-                dist = np.hypot(new_node.x - obs.x, new_node.y - obs.y)
-                safety_reward += min(dist * 0.2, 10.0)
+                obs_tensor = torch.tensor([obs.x, obs.y], device=self.device, dtype=torch.float32)
+                dist = torch.norm(new_node_tensor - obs_tensor)
+                safety_reward += torch.min(dist * 0.2, torch.tensor(10.0, device=self.device))
 
             # 路径平滑度奖励
-            smoothness_reward = 0
+            smoothness_reward = torch.tensor(0.0, device=self.device)
             if len(self.path_history) >= 3:
-                curvature = self.compute_curvature(self.path_history[-2], self.path_history[-1], new_node)
+                curvature = torch.tensor(self.compute_curvature(self.path_history[-2], self.path_history[-1], new_node),
+                                         device=self.device)
                 smoothness_reward = -curvature * 5.0  # 惩罚高曲率
 
             # 预测奖励
-            prediction_reward = 0
+            prediction_reward = torch.tensor(0.0, device=self.device)
             # 如果障碍物历史不足，跳过预测奖励
             if self.obstacle_history and all(len(h) >= self.prediction_horizon for h in self.obstacle_history):
                 for obs_history in self.obstacle_history:
                     predicted_pos = self.predict_obstacle_motion(obs_history)
-                    future_dist = np.hypot(new_node.x - predicted_pos[0], new_node.y - predicted_pos[1])
-                    prediction_reward += min(future_dist * 0.1, 5.0)
+                    predicted_tensor = torch.tensor(predicted_pos, device=self.device, dtype=torch.float32)
+                    future_dist = torch.norm(new_node_tensor - predicted_tensor)
+                    prediction_reward += torch.min(future_dist * 0.1, torch.tensor(5.0, device=self.device))
 
-            total_reward = dist_reward + safety_reward + \
-                smoothness_reward + direction_reward + (prediction_reward if prediction_reward != 0 else 0)
+            # 计算总奖励
+            total_reward = dist_reward + safety_reward + smoothness_reward + direction_reward
+            if prediction_reward != 0:
+                total_reward += prediction_reward
 
-            return total_reward
+            return total_reward.item()
         except Exception as e:
             print(f"计算奖励出错: {e}")
-            return -dist_to_goal * 0.1  # 出错时返回简单的距离奖励
+            # 确保在异常情况下仍然有一个基本奖励
+            try:
+                # 使用torch计算简单距离奖励
+                new_node_tensor = torch.tensor([new_node.x, new_node.y], device=self.device, dtype=torch.float32)
+                goal_tensor = torch.tensor([self.goal_node.x, self.goal_node.y],
+                                           device=self.device,
+                                           dtype=torch.float32)
+                simple_dist = torch.norm(goal_tensor - new_node_tensor)
+                return (-simple_dist * 0.1).item()
+            except Exception:
+                # 如果还是失败，返回一个固定的负奖励
+                return -10.0
 
     def update_prediction_network(self):
         """更新预测网络"""
@@ -567,10 +650,10 @@ class AttentionDQNRRT(RRTStar):
             print(f"更新预测网络出错: {e}")
 
     def extend(self, nearest_node: Node) -> Optional[Node]:
-        """增强的扩展方法"""
+        """增强的扩展方法，使用torch加速计算"""
         try:
             # 获取状态并选择动作
-            state = self.get_state(nearest_node)
+            state = self.get_state(nearest_node)  # 已经是torch.Tensor
             action = self.select_action(state)
 
             # 将扩展的离散动作转换为连续参数
@@ -579,15 +662,24 @@ class AttentionDQNRRT(RRTStar):
             step_scale = ((action // 8) % 4) * 0.25 + 0.25  # 步长比例 [0.25, 0.5, 0.75, 1.0]
             steering = (action // 32) % 2  # 转向选项 [0, 1]
 
-            # 计算角度和步长
-            base_angle = 2 * np.pi * direction / 8
+            # 使用torch计算角度和步长
+            base_angle = 2 * torch.pi * torch.tensor(direction / 8.0, device=self.device)
             if steering == 1:  # 应用转向调整
-                base_angle += np.pi / 16  # 轻微转向调整
+                base_angle += torch.pi / 16  # 轻微转向调整
 
-            dx = self.step_size * step_scale * np.cos(base_angle)
-            dy = self.step_size * step_scale * np.sin(base_angle)
+            # 计算扩展后的坐标
+            nearest_node_tensor = torch.tensor([nearest_node.x, nearest_node.y],
+                                               device=self.device,
+                                               dtype=torch.float32)
+            step_size_tensor = torch.tensor(self.step_size * step_scale, device=self.device, dtype=torch.float32)
 
-            new_node = Node(nearest_node.x + dx, nearest_node.y + dy)
+            dx = step_size_tensor * torch.cos(base_angle)
+            dy = step_size_tensor * torch.sin(base_angle)
+
+            new_pos = nearest_node_tensor + torch.tensor([dx, dy], device=self.device)
+
+            # 创建新节点
+            new_node = Node(new_pos[0].item(), new_pos[1].item())
 
             # 检查碰撞
             collision = self.check_collision(nearest_node, new_node)
@@ -703,16 +795,21 @@ class AttentionDQNRRT(RRTStar):
         self.attention_maps = checkpoint['attention_maps']
 
     def select_action(self, state):
-        """选择动作"""
-        # 将状态转换为tensor
-        state = torch.FloatTensor(state).unsqueeze(0).to(self.device)
-
+        """选择动作，优化GPU使用"""
         # epsilon-greedy策略
         if random.random() < self.epsilon:
             # 随机探索
             action = random.randint(0, self.action_dim - 1)
         else:
             # 利用当前策略
+            # 如果state已经是tensor，则不需要再转换
+            if not isinstance(state, torch.Tensor):
+                state = torch.FloatTensor(state).to(self.device)
+
+            # 确保state是二维的，适合网络输入
+            if state.dim() == 1:
+                state = state.unsqueeze(0)
+
             with torch.no_grad():
                 q_values, _ = self.q_network(state)
                 action = q_values.argmax(1).item()
@@ -721,99 +818,124 @@ class AttentionDQNRRT(RRTStar):
 
     def plan(self):
         """规划路径，优化停车动作"""
-        # 初始化路径
-        self.path_history = [self.start_node]
-        current_node = self.start_node
+        try:
+            # 初始化路径
+            self.path_history = [self.start_node]
+            current_node = self.start_node
 
-        # 用于跟踪最佳停车姿态
-        best_parking_score = float('-inf')
-        best_parking_node = None
-        best_action = None  # 记录最佳动作
+            # 用于跟踪最佳停车姿态
+            best_parking_score = float('-inf')
+            best_parking_node = None
+            best_action = None  # 记录最佳动作
 
-        for _ in range(self.max_iterations):
-            # 获取当前状态
-            state = self.get_state(current_node)
+            for _ in range(self.max_iterations):
+                # 获取当前状态
+                state = self.get_state(current_node)
 
-            # 选择动作
-            action = self.select_action(state)
+                # 选择动作
+                action = self.select_action(state)
 
-            # 扩展节点
-            new_node = self.extend(current_node)
+                # 扩展节点
+                new_node = self.extend(current_node)
 
-            if new_node is None:
-                continue
+                if new_node is None:
+                    continue
 
-            # 更新当前节点
-            current_node = new_node
+                # 更新当前节点
+                current_node = new_node
 
-            # 检查是否接近目标
-            dist_to_goal = np.hypot(current_node.x - self.goal_node.x, current_node.y - self.goal_node.y)
+                # 检查是否接近目标
+                # 使用torch计算距离
+                current_tensor = torch.tensor([current_node.x, current_node.y], device=self.device, dtype=torch.float32)
+                goal_tensor = torch.tensor([self.goal_node.x, self.goal_node.y],
+                                           device=self.device,
+                                           dtype=torch.float32)
+                dist_to_goal = torch.norm(goal_tensor - current_tensor).item()
 
-            if dist_to_goal < self.step_size * 2:
-                # 计算停车姿态得分
-                if len(self.path_history) >= 2:
-                    prev_node = self.path_history[-2]
-                    current_direction = np.arctan2(current_node.y - prev_node.y, current_node.x - prev_node.x)
-                    desired_direction = np.arctan2(self.goal_node.y - self.start_node.y,
-                                                   self.goal_node.x - self.start_node.x)
-                    angle_diff = abs(current_direction - desired_direction)
-                    angle_diff = min(angle_diff, 2 * np.pi - angle_diff)
+                if dist_to_goal < self.step_size * 2:
+                    # 计算停车姿态得分
+                    if len(self.path_history) >= 2:
+                        prev_node = self.path_history[-2]
+                        # 使用torch进行角度计算
+                        prev_tensor = torch.tensor([prev_node.x, prev_node.y], device=self.device, dtype=torch.float32)
+                        start_tensor = torch.tensor([self.start_node.x, self.start_node.y],
+                                                    device=self.device,
+                                                    dtype=torch.float32)
 
-                    parking_score = 1.0 - angle_diff / np.pi
+                        # 计算方向向量
+                        dir_vector = current_tensor - prev_tensor
+                        desired_vector = goal_tensor - start_tensor
 
-                    # 考虑与障碍物的距离
-                    min_obstacle_dist = float('inf')
-                    for obs in self.get_k_nearest_obstacles(current_node, 3):
-                        dist = np.hypot(current_node.x - obs.x, current_node.y - obs.y)
-                        min_obstacle_dist = min(min_obstacle_dist, dist)
+                        # 计算方向角
+                        current_direction = torch.atan2(dir_vector[1], dir_vector[0]).item()
+                        desired_direction = torch.atan2(desired_vector[1], desired_vector[0]).item()
 
-                    # 综合评分：姿态 + 安全距离 + 动作平滑度
-                    action_smoothness = 1.0 - abs(action % 8 - 4) / 4.0  # 评估动作的平滑度
-                    total_score = parking_score + min(min_obstacle_dist * 0.1, 1.0) + action_smoothness * 0.5
+                        # 计算角度差
+                        angle_diff = abs(current_direction - desired_direction)
+                        angle_diff = min(angle_diff, 2 * np.pi - angle_diff)
 
-                    if total_score > best_parking_score:
-                        best_parking_score = total_score
-                        best_parking_node = current_node
-                        best_action = action
+                        parking_score = 1.0 - angle_diff / np.pi
 
-            # 检查是否达到目标
-            if self.is_goal_reached(current_node):
-                # 如果找到了更好的停车姿态，使用它
-                if best_parking_node is not None and best_parking_score > 0.8:
-                    # 存储最佳动作用于经验回放
-                    if best_action is not None:
-                        state = self.get_state(self.path_history[-1])
-                        next_state = self.get_state(best_parking_node)
-                        reward = self.get_reward(best_parking_node, False) * 2  # 额外奖励
-                        self.replay_buffer.push(state, best_action, reward, next_state, True)
+                        # 考虑与障碍物的距离 - 这部分保持numpy计算以兼容现有代码
+                        min_obstacle_dist = float('inf')
+                        for obs in self.get_k_nearest_obstacles(current_node, 3):
+                            dist = np.hypot(current_node.x - obs.x, current_node.y - obs.y)
+                            min_obstacle_dist = min(min_obstacle_dist, dist)
 
-                    self.path_history.append(best_parking_node)
+                        # 综合评分：姿态 + 安全距离 + 动作平滑度
+                        action_smoothness = 1.0 - abs(action % 8 - 4) / 4.0  # 评估动作的平滑度
+                        total_score = parking_score + min(min_obstacle_dist * 0.1, 1.0) + action_smoothness * 0.5
+
+                        if total_score > best_parking_score:
+                            best_parking_score = total_score
+                            best_parking_node = current_node
+                            best_action = action
+
+                # 检查是否达到目标
+                if self.is_goal_reached(current_node):
+                    # 如果找到了更好的停车姿态，使用它
+                    if best_parking_node is not None and best_parking_score > 0.8:
+                        # 存储最佳动作用于经验回放
+                        if best_action is not None:
+                            state = self.get_state(self.path_history[-1])
+                            next_state = self.get_state(best_parking_node)
+                            reward = self.get_reward(best_parking_node, False) * 2  # 额外奖励
+                            self.replay_buffer.push(state, best_action, reward, next_state, True)
+
+                        self.path_history.append(best_parking_node)
+                        return self.path_history
+
+                    # 否则使用当前路径
+                    self.path_history.append(self.goal_node)
                     return self.path_history
 
-                # 否则使用当前路径
-                self.path_history.append(self.goal_node)
+            # 如果找到了可接受的停车姿态但未完全到达目标
+            if best_parking_node is not None and best_parking_score > 0.7:
+                # 存储最佳动作用于经验回放
+                if best_action is not None:
+                    state = self.get_state(self.path_history[-1])
+                    next_state = self.get_state(best_parking_node)
+                    reward = self.get_reward(best_parking_node, False) * 1.5  # 额外奖励
+                    self.replay_buffer.push(state, best_action, reward, next_state, True)
+
+                self.path_history.append(best_parking_node)
                 return self.path_history
 
-        # 如果找到了可接受的停车姿态但未完全到达目标
-        if best_parking_node is not None and best_parking_score > 0.7:
-            # 存储最佳动作用于经验回放
-            if best_action is not None:
-                state = self.get_state(self.path_history[-1])
-                next_state = self.get_state(best_parking_node)
-                reward = self.get_reward(best_parking_node, False) * 1.5  # 额外奖励
-                self.replay_buffer.push(state, best_action, reward, next_state, True)
-
-            self.path_history.append(best_parking_node)
-            return self.path_history
-
-        return None
+            print("未能找到通往目标的路径")
+            return None
+        except Exception as e:
+            print(f"规划路径时出错: {e}")
+            return None
 
     def is_goal_reached(self, node: Node) -> bool:
-        """检查是否到达目标，考虑停车要求"""
+        """检查是否到达目标，考虑停车要求，使用torch加速计算"""
         if not node:
             return False
 
-        dist = np.hypot(node.x - self.goal_node.x, node.y - self.goal_node.y)
+        # 使用torch计算距离
+        node_tensor = torch.tensor([node.x, node.y], device=self.device, dtype=torch.float32)
+        goal_tensor = torch.tensor([self.goal_node.x, self.goal_node.y], device=self.device, dtype=torch.float32)
+        dist = torch.norm(goal_tensor - node_tensor).item()
 
         # 基本距离要求
         if dist > self.step_size * 2:
@@ -822,8 +944,18 @@ class AttentionDQNRRT(RRTStar):
         # 检查停车姿态
         if len(self.path_history) >= 2:
             prev_node = self.path_history[-2]
-            current_direction = np.arctan2(node.y - prev_node.y, node.x - prev_node.x)
-            desired_direction = np.arctan2(self.goal_node.y - self.start_node.y, self.goal_node.x - self.start_node.x)
+
+            # 使用torch计算方向
+            prev_tensor = torch.tensor([prev_node.x, prev_node.y], device=self.device, dtype=torch.float32)
+            start_tensor = torch.tensor([self.start_node.x, self.start_node.y], device=self.device, dtype=torch.float32)
+
+            # 计算方向向量和角度
+            current_dir = node_tensor - prev_tensor
+            desired_dir = goal_tensor - start_tensor
+
+            current_direction = torch.atan2(current_dir[1], current_dir[0]).item()
+            desired_direction = torch.atan2(desired_dir[1], desired_dir[0]).item()
+
             angle_diff = abs(current_direction - desired_direction)
             angle_diff = min(angle_diff, 2 * np.pi - angle_diff)
 
@@ -834,9 +966,13 @@ class AttentionDQNRRT(RRTStar):
         return True
 
     def check_collision(self, from_node: Node, to_node: Node) -> bool:
-        """检查路径是否碰撞"""
+        """检查路径是否碰撞，使用torch加速计算"""
         # 检查节点是否在环境边界内
-        if not (0 <= to_node.x <= self.env.width and 0 <= to_node.y <= self.env.height):
+        env_width_tensor = torch.tensor(self.env.width, device=self.device, dtype=torch.float32)
+        env_height_tensor = torch.tensor(self.env.height, device=self.device, dtype=torch.float32)
+        to_tensor = torch.tensor([to_node.x, to_node.y], device=self.device, dtype=torch.float32)
+
+        if not (torch.all((to_tensor >= 0) & (to_tensor[0] <= env_width_tensor) & (to_tensor[1] <= env_height_tensor))):
             return True
 
         # 检查与障碍物的碰撞
