@@ -517,9 +517,9 @@ def optimize_path(path: List[Tuple[float, float]], env: Environment, vehicle_wid
     original_path = path  # 保存原始路径以备回退
 
     try:
-    # 初始化路径平滑器
-    from rrt.path_smoothing import PathSmoother
-    smoother = PathSmoother(vehicle_width, vehicle_length)
+        # 初始化路径平滑器
+        from rrt.path_smoothing import PathSmoother
+        smoother = PathSmoother(vehicle_width, vehicle_length)
 
         # 1. 轨迹误差检测 (TED)，去除冗余点 (Re-enabled)
         print("优化步骤1: 轨迹误差检测...")
@@ -531,7 +531,7 @@ def optimize_path(path: List[Tuple[float, float]], env: Environment, vehicle_wid
             print(f"TED后路径点数: {len(simplified_path)}")
             path = simplified_path  # 更新路径
 
-    # 2. 五次多项式插值平滑
+        # 2. 五次多项式插值平滑
         print("优化步骤2: 五次多项式插值...")
         # 调整num_points可以改变平滑度和路径长度的平衡
         interpolated_path = smoother.quintic_polynomial_interpolation(path, num_points=5)
@@ -542,7 +542,7 @@ def optimize_path(path: List[Tuple[float, float]], env: Environment, vehicle_wid
             print(f"插值后路径点数: {len(interpolated_path)}")
             path = interpolated_path  # 更新路径
 
-    # 3. 卡尔曼滤波平滑
+        # 3. 卡尔曼滤波平滑
         print("优化步骤3: 卡尔曼滤波平滑...")
         kalman_smoothed_path = smoother.kalman_filter_smoothing(path, process_noise=0.1, measurement_noise=0.1)
         if not kalman_smoothed_path or len(kalman_smoothed_path) < 2:
@@ -565,7 +565,7 @@ def optimize_path(path: List[Tuple[float, float]], env: Environment, vehicle_wid
         # 5. 检查优化后的路径是否可行 (Re-enabled)
         print("优化步骤5: 最终碰撞检测...")
         collision_info = check_path_collision(path, env, vehicle_length, vehicle_width, steps=len(path) * 2)  # 增加检查密度
-    if collision_info['collision']:
+        if collision_info['collision']:
             print(f"警告: 优化后的路径在点 {collision_info.get('point', 'N/A')} 附近发生碰撞，将回退到原始路径。")
             return original_path  # 回退到原始路径
         else:
@@ -583,7 +583,7 @@ def optimize_path(path: List[Tuple[float, float]], env: Environment, vehicle_wid
             # return original_path
 
         print(f"路径优化完成。原始长度: {original_length:.2f}m, 优化后长度: {optimized_length:.2f}m")
-    return path
+        return path
 
     except ImportError:
         print("错误：需要PathSmoother类来进行路径优化。请确保 'rrt.path_smoothing' 存在。")
@@ -869,8 +869,8 @@ class ParkingDemoSimulator(PygameSimulator):
 
     def _handle_events(self):
         """处理Pygame事件，包括基类事件和演示特定事件"""
-                for event in pygame.event.get():
-                    if event.type == pygame.QUIT:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
                 self.running = False
                 return False
             elif event.type == pygame.KEYDOWN:
@@ -898,7 +898,7 @@ class ParkingDemoSimulator(PygameSimulator):
                     self.status_text = "等待选择目标点"
                     self.status_color = BLACK
 
-                    elif event.type == pygame.MOUSEBUTTONDOWN:
+            elif event.type == pygame.MOUSEBUTTONDOWN:
                 # 鼠标右键点击选择目标点 (Button 3)
                 if event.button == 3 and not self.simulating:
                     screen_pos = event.pos
@@ -909,14 +909,14 @@ class ParkingDemoSimulator(PygameSimulator):
                     if isinstance(self.environment, ParkingEnvironment):
                         try:
                             parking_spot = self.environment.find_parking_spot(world_pos)
-                            except Exception as e:
-                                print(f"查找停车位时出错: {e}")
+                        except Exception as e:
+                            print(f"查找停车位时出错: {e}")
 
-                            if parking_spot:
+                    if parking_spot:
                         self.goal_pos = (parking_spot.x, parking_spot.y)
                         print(f"选择停车位，目标点设为: {self.goal_pos}")
                         self._plan_path_to_goal()
-                                else:
+                    else:
                         print(f"点击位置不在可用停车位内，将 {world_pos} 设为目标点")
                         # 检查点击位置是否在障碍物内
                         temp_vehicle = VehicleModel(world_pos[0], world_pos[1], 0, self.vehicle.length,
@@ -924,14 +924,15 @@ class ParkingDemoSimulator(PygameSimulator):
                         if check_vehicle_collision(temp_vehicle, self.environment)['collision']:
                             self.status_text = "目标点在障碍物内，请重新选择"
                             self.status_color = RED
-                            else:
+                        else:
                             self.goal_pos = world_pos
                             self._plan_path_to_goal()
         return True
 
     def _draw_parking_environment(self):
         """专门绘制停车场环境，包括停车位特殊显示"""
-        if not self.environment: return
+        if not self.environment:
+            return
 
         # 绘制所有障碍物
         for obs in self.environment.obstacles:
@@ -957,7 +958,7 @@ class ParkingDemoSimulator(PygameSimulator):
                         rotated_surface = pygame.transform.rotate(surface, -angle)
                         rotated_rect = rotated_surface.get_rect(center=(screen_center_x, screen_center_y))
                         self.screen.blit(rotated_surface, rotated_rect)
-                else:
+                    else:
                         rect.center = (screen_center_x, screen_center_y)
                         self.screen.blit(surface, rect)
                 else:
@@ -971,7 +972,7 @@ class ParkingDemoSimulator(PygameSimulator):
                         rotated_surface = pygame.transform.rotate(surface, -angle)
                         rotated_rect = rotated_surface.get_rect(center=(screen_center_x, screen_center_y))
                         self.screen.blit(rotated_surface, rotated_rect)
-                else:
+                    else:
                         rect.center = (screen_center_x, screen_center_y)
                         self.screen.blit(surface, rect)
 

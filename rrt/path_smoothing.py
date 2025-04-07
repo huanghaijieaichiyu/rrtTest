@@ -11,6 +11,8 @@
 
 import numpy as np
 from typing import List, Tuple
+# 导入独立的碰撞检测函数
+from simulation.pygame_simulator import check_segment_collision
 
 
 class PathSmoother:
@@ -173,6 +175,53 @@ class PathSmoother:
             filtered_path.append((state[0], state[1]))
 
         return filtered_path
+
+    def shortcut_path(self, path: List[Tuple[float, float]], env) -> List[Tuple[float, float]]:
+        """
+        路径快捷化：尝试连接非相邻节点以缩短路径。
+
+        参数:
+            path: 待快捷化的路径
+            env: 环境对象，用于碰撞检测
+
+        返回:
+            快捷化后的路径
+        """
+        if len(path) < 3:
+            return path
+
+        # # 警告：当前未使用精确的碰撞检测 (注释掉，因为我们现在使用了)
+        # print("警告: shortcut_path当前未使用精确碰撞检测。生成的路径可能不安全。")
+        # def dummy_collision_check(p1, p2, env, vehicle_length, vehicle_width):
+        #     """虚拟碰撞检测，始终返回False。"""
+        #     # TODO: 实现或导入一个精确的基于车辆模型的碰撞检测函数
+        #     # 例如: return check_vehicle_path_collision(p1, p2, env, vehicle_length, vehicle_width)
+        #     return False
+
+        shortcutted_path = [path[0]]  # 结果路径，从起点开始
+        current_index = 0
+
+        while current_index < len(path) - 1:
+            best_next_index = current_index + 1
+            # 从当前点之后的最远点开始尝试连接
+            for next_index in range(len(path) - 1, current_index + 1, -1):
+                p1 = path[current_index]
+                p2 = path[next_index]
+
+                # 使用导入的碰撞检测函数
+                is_collision = check_segment_collision(p1, p2, env, self.vehicle_length, self.vehicle_width)
+
+                if not is_collision:
+                    # 如果不碰撞，这是当前可达的最远点
+                    best_next_index = next_index
+                    break  # 找到了最远的无碰撞连接，跳出内层循环
+
+            # 将最佳的下一个节点添加到结果路径
+            shortcutted_path.append(path[best_next_index])
+            # 更新当前索引
+            current_index = best_next_index
+
+        return shortcutted_path
 
     def smooth_path(self, path: List[Tuple[float, float]]) -> List[Tuple[float, float]]:
         """

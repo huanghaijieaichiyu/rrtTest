@@ -293,8 +293,8 @@ class AttentionDQNRRT(RRTStar):
             try:
                 self.load_model(model_path)
                 print(f"成功加载预训练模型: {model_path}")
-                # 降低探索率，更多依赖学习到的策略
-                self.epsilon = 0.05
+                # 降低探索率，但保留一定的探索能力
+                self.epsilon = 0.1
             except Exception as e:
                 print(f"加载模型失败: {e}")
                 print("将使用随机初始化的模型")
@@ -457,14 +457,19 @@ class AttentionDQNRRT(RRTStar):
             # 使用Heron公式计算面积
             s = (a + b + c) / 2.0
 
-            # 添加数值稳定性：确保s*(s-a)*(s-b)*(s-c) > 0
+            # 添加数值稳定性：确保s*(s-a)*(s-b)*(s-c) >= 0
             area_squared = s * (s - a) * (s - b) * (s - c)
+            area_squared = torch.clamp(area_squared, min=0.0)  # 确保非负
 
             # 安全处理面积计算
             if area_squared > 1e-10:  # 避免接近零的值
                 area = torch.sqrt(area_squared)
-                curvature = 4 * area / (a * b * c)
-                return curvature.item()
+                # 避免除以零：检查边长是否有效
+                if a * b * c > 1e-10:
+                    curvature = 4 * area / (a * b * c)
+                    return curvature.item()
+                else:
+                    return 0.0  # 边长过小，视为直线
 
             return 0.0
         except Exception as e:
@@ -858,13 +863,10 @@ class AttentionDQNRRT(RRTStar):
                         prev_node = self.path_history[-2]
                         # 使用torch进行角度计算
                         prev_tensor = torch.tensor([prev_node.x, prev_node.y], device=self.device, dtype=torch.float32)
-                        start_tensor = torch.tensor([self.start_node.x, self.start_node.y],
-                                                    device=self.device,
-                                                    dtype=torch.float32)
 
                         # 计算方向向量
                         dir_vector = current_tensor - prev_tensor
-                        desired_vector = goal_tensor - start_tensor
+                        desired_vector = goal_tensor - current_tensor
 
                         # 计算方向角
                         current_direction = torch.atan2(dir_vector[1], dir_vector[0]).item()
@@ -947,14 +949,11 @@ class AttentionDQNRRT(RRTStar):
 
             # 使用torch计算方向
             prev_tensor = torch.tensor([prev_node.x, prev_node.y], device=self.device, dtype=torch.float32)
-            start_tensor = torch.tensor([self.start_node.x, self.start_node.y], device=self.device, dtype=torch.float32)
 
             # 计算方向向量和角度
             current_dir = node_tensor - prev_tensor
-            desired_dir = goal_tensor - start_tensor
-
             current_direction = torch.atan2(current_dir[1], current_dir[0]).item()
-            desired_direction = torch.atan2(desired_dir[1], desired_dir[0]).item()
+            desired_direction = torch.atan2(goal_tensor[1] - node_tensor[1], goal_tensor[0] - node_tensor[0]).item()
 
             angle_diff = abs(current_direction - desired_direction)
             angle_diff = min(angle_diff, 2 * np.pi - angle_diff)
@@ -993,70 +992,76 @@ class AttentionDQNRRT(RRTStar):
         return False
 
     def _line_rectangle_intersection(self, line_start: tuple, line_end: tuple, rect_bl: tuple, rect_tr: tuple) -> bool:
-        """检查线段是否与矩形相交"""
-        # 线段参数
-        x1, y1 = line_start
-        x2, y2 = line_end
+        """检查线段是否与矩形相交，使用torch加速计算"""
+        # 将输入转换为tensor
+        line_start_t = torch.tensor(line_start, device=self.device, dtype=torch.float32)
+        line_end_t = torch.tensor(line_end, device=self.device, dtype=torch.float32)
+        rect_bl_t = torch.tensor(rect_bl, device=self.device, dtype=torch.float32)
+        rect_tr_t = torch.tensor(rect_tr, device=self.device, dtype=torch.float32)
 
         # 矩形参数
-        left, bottom = rect_bl
-        right, top = rect_tr
+        left, bottom = rect_bl_t
+        right, top = rect_tr_t
 
         # 快速排除：检查线段的包围盒是否与矩形相交
-        if max(x1, x2) < left or min(x1, x2) > right or \
-           max(y1, y2) < bottom or min(y1, y2) > top:
+        if (torch.max(line_start_t[0], line_end_t[0]) < left or torch.min(line_start_t[0], line_end_t[0]) > right
+                or torch.max(line_start_t[1], line_end_t[1]) < bottom
+                or torch.min(line_start_t[1], line_end_t[1]) > top):
             return False
 
         # 检查线段是否完全在矩形内部
-        if left <= x1 <= right and bottom <= y1 <= top and \
-           left <= x2 <= right and bottom <= y2 <= top:
+        if (left <= line_start_t[0] <= right and bottom <= line_start_t[1] <= top and left <= line_end_t[0] <= right
+                and bottom <= line_end_t[1] <= top):
             return True
 
         # 检查线段是否与矩形的边相交
         edges = [
-            ((left, bottom), (right, bottom)),  # 底边
-            ((right, bottom), (right, top)),  # 右边
-            ((right, top), (left, top)),  # 顶边
-            ((left, top), (left, bottom))  # 左边
+            (rect_bl_t, torch.tensor([right, bottom], device=self.device, dtype=torch.float32)),  # 底边
+            (torch.tensor([right, bottom], device=self.device, dtype=torch.float32), rect_tr_t),  # 右边
+            (rect_tr_t, torch.tensor([left, top], device=self.device, dtype=torch.float32)),  # 顶边
+            (torch.tensor([left, top], device=self.device, dtype=torch.float32), rect_bl_t)  # 左边
         ]
 
-        for edge_start, edge_end in edges:
-            if self._line_segments_intersect(line_start, line_end, edge_start, edge_end):
+        for edge_start_t, edge_end_t in edges:
+            if self._line_segments_intersect_torch(line_start_t, line_end_t, edge_start_t, edge_end_t):
                 return True
 
         return False
 
-    def _line_segments_intersect(self, p1: tuple, p2: tuple, p3: tuple, p4: tuple) -> bool:
-        """检查两条线段是否相交"""
+    def _line_segments_intersect_torch(self, p1: torch.Tensor, p2: torch.Tensor, p3: torch.Tensor,
+                                       p4: torch.Tensor) -> bool:
+        """检查两条线段是否相交，使用torch计算"""
 
-        # 计算方向
-        def direction(p1, p2, p3):
-            return (p3[1] - p1[1]) * (p2[0] - p1[0]) - \
-                   (p2[1] - p1[1]) * (p3[0] - p1[0])
+        # 计算方向 (cross product)
+        def direction_torch(p_i, p_j, p_k):
+            # (pj - pi) x (pk - pi)
+            return (p_j[0] - p_i[0]) * (p_k[1] - p_i[1]) - (p_j[1] - p_i[1]) * (p_k[0] - p_i[0])
 
-        # 检查点是否在线段上
-        def on_segment(p, q, r):
-            return q[0] <= max(p[0], r[0]) and q[0] >= min(p[0], r[0]) and \
-                   q[1] <= max(p[1], r[1]) and q[1] >= min(p[1], r[1])
+        # 检查点是否在线段上 (使用torch)
+        def on_segment_torch(p, q, r):
+            # Check if q.x and q.y lie within the bounding box defined by p and r
+            return ((q[0] <= torch.max(p[0], r[0])) and (q[0] >= torch.min(p[0], r[0]))
+                    and (q[1] <= torch.max(p[1], r[1])) and (q[1] >= torch.min(p[1], r[1])))
 
-        d1 = direction(p3, p4, p1)
-        d2 = direction(p3, p4, p2)
-        d3 = direction(p1, p2, p3)
-        d4 = direction(p1, p2, p4)
+        d1 = direction_torch(p3, p4, p1)
+        d2 = direction_torch(p3, p4, p2)
+        d3 = direction_torch(p1, p2, p3)
+        d4 = direction_torch(p1, p2, p4)
 
         # 一般情况下的相交
         if ((d1 > 0 and d2 < 0) or (d1 < 0 and d2 > 0)) and \
            ((d3 > 0 and d4 < 0) or (d3 < 0 and d4 > 0)):
             return True
 
-        # 特殊情况：线段共线
-        if d1 == 0 and on_segment(p3, p1, p4):
+        # 特殊情况：线段共线 (使用torch.isclose处理浮点数比较)
+        zero_tol = 1e-7  # 容忍度
+        if torch.isclose(d1, torch.tensor(0.0, device=self.device), atol=zero_tol) and on_segment_torch(p3, p1, p4):
             return True
-        if d2 == 0 and on_segment(p3, p2, p4):
+        if torch.isclose(d2, torch.tensor(0.0, device=self.device), atol=zero_tol) and on_segment_torch(p3, p2, p4):
             return True
-        if d3 == 0 and on_segment(p1, p3, p2):
+        if torch.isclose(d3, torch.tensor(0.0, device=self.device), atol=zero_tol) and on_segment_torch(p1, p3, p2):
             return True
-        if d4 == 0 and on_segment(p1, p4, p2):
+        if torch.isclose(d4, torch.tensor(0.0, device=self.device), atol=zero_tol) and on_segment_torch(p1, p4, p2):
             return True
 
         return False

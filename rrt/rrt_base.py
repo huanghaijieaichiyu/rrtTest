@@ -23,6 +23,8 @@ class Node:
         self.y = y
         self.parent = None
         self.cost = 0.0  # 从起点到该节点的代价
+        self.path_x = []  # 存储路径的x坐标
+        self.path_y = []  # 存储路径的y坐标
 
     def __iter__(self):
         """使节点可迭代，返回x和y坐标"""
@@ -84,6 +86,9 @@ class RRT:
         """
         self.start = Node(start[0], start[1])
         self.goal = Node(goal[0], goal[1])
+        # 初始化起点的路径
+        self.start.path_x = [self.start.x]
+        self.start.path_y = [self.start.y]
         self.env = env
         self.step_size = step_size
         self.max_iterations = max_iterations
