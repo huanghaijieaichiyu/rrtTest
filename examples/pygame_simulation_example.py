@@ -29,35 +29,42 @@ def parse_args():
     """解析命令行参数"""
     parser = argparse.ArgumentParser(description='Pygame 路径规划仿真')
 
-    parser.add_argument('--start', type=float, nargs=2, default=[10, 10], help='起点坐标，例如："--start 10 10"')
+    parser.add_argument('--start', type=float, nargs=2,
+                        default=[10, 10], help='起点坐标，例如："--start 10 10"')
 
-    parser.add_argument('--goal', type=float, nargs=2, default=[70, 70], help='终点坐标，例如："--goal 90 90"')
+    parser.add_argument('--goal', type=float, nargs=2,
+                        default=[70, 70], help='终点坐标，例如："--goal 90 90"')
 
     parser.add_argument('--map', type=str, default=None, help='地图文件路径')
 
-    parser.add_argument('--config', type=str, default='config/pygame_config.yaml', help='Pygame配置文件路径')
+    parser.add_argument(
+        '--config', type=str, default='config/pygame_config.yaml', help='Pygame配置文件路径')
 
     parser.add_argument(
         '--algorithm',
         type=str,
-        choices=['rrt', 'rrt_star', 'informed_rrt', 'astar', 'dijkstra', 'dstar_lite', 'theta_star', 'rl', 'ppo'],
+        choices=['rrt', 'rrt_star', 'informed_rrt', 'astar',
+                 'dijkstra', 'dstar_lite', 'theta_star', 'rl', 'ppo'],
         default='dijkstra',
         help='路径规划算法')
 
-    parser.add_argument('--iterations', type=int, default=10000, help='算法最大迭代次数')
+    parser.add_argument('--iterations', type=int,
+                        default=10000, help='算法最大迭代次数')
 
     parser.add_argument('--save-fig', action='store_true', help='保存结果图表')
 
-    parser.add_argument('--save-path', type=str, default=None, help='保存路径的文件路径')
+    parser.add_argument('--save-path', type=str,
+                        default=None, help='保存路径的文件路径')
 
-    parser.add_argument('--model-path', type=str, default=None, help='RL/PPO模型路径')
+    parser.add_argument('--model-path', type=str,
+                        default=None, help='RL/PPO模型路径')
 
     return parser.parse_args()
 
 
 def check_path_feasibility(env, start_pos, goal_pos, algorithm: str):
     """
-    检查路径可行性，使用实际规划算法和A*进行双重验证
+    检查路径可行性，使用 Dijkstra 算法进行快速验证
 
     参数:
         env: 环境对象
@@ -65,73 +72,71 @@ def check_path_feasibility(env, start_pos, goal_pos, algorithm: str):
         goal_pos: 终点坐标
         algorithm: 使用的规划算法
     """
-    # 1. 使用实际规划算法进行验证
+    import threading
+    import time
+
+    # 使用 Dijkstra 进行快速验证
     common_params = {
         'start': start_pos,
         'goal': goal_pos,
         'env': env,
     }
 
-    # 根据算法类型创建对应的规划器
-    if algorithm in ['rrt', 'rrt_star', 'informed_rrt']:
-        test_planner = globals()[{
-            'rrt': 'RRT',
-            'rrt_star': 'RRTStar',
-            'informed_rrt': 'InformedRRTStar'
-        }[algorithm]](
-            **common_params,
-            max_iterations=5000,  # 验证时使用较大的迭代次数
-            step_size=5.0)
-    elif algorithm in ['astar', 'dijkstra', 'dstar_lite', 'theta_star']:
-        planner_class = {
-            'astar': AStar,
-            'dijkstra': Dijkstra,
-            'dstar_lite': DStarLite,
-            'theta_star': ThetaStar
-        }[algorithm]
-        test_planner = planner_class(
-            **common_params,
-            resolution=0.5,  # 验证时使用更小的分辨率
-            diagonal_movement=True)
-    else:  # RL/PPO算法使用A*验证
-        test_planner = AStar(**common_params, resolution=0.5, diagonal_movement=True)
+    # 使用较大的分辨率和较少的采样点来加速验证
+    test_planner = Dijkstra(
+        **common_params,
+        resolution=2.0,  # 增大分辨率
+        diagonal_movement=True)  # 允许对角线移动以减少路径点
 
-    primary_path = test_planner.plan()
-    if not primary_path:
-        print(f"使用 {algorithm} 算法验证失败：无法找到可行路径")
+    # 使用线程实现超时机制
+    path = []
+    path_found = threading.Event()
+    planning_error = None
+
+    def planning_thread():
+        nonlocal path, planning_error
+        try:
+            path = test_planner.plan()
+            path_found.set()
+        except Exception as e:
+            planning_error = e
+            path_found.set()
+
+    # 启动规划线程
+    planner_thread = threading.Thread(target=planning_thread)
+    planner_thread.daemon = True  # 设置为守护线程，主线程退出时会被强制结束
+    planner_thread.start()
+
+    # 等待规划完成或超时
+    if not path_found.wait(timeout=5.0):  # 5秒超时
+        print("路径验证超时（>5.0秒）")
         return False
 
-    # 验证路径连续性
-    for i in range(len(primary_path) - 1):
-        p1 = primary_path[i]
-        p2 = primary_path[i + 1]
-        if not check_line_collision_free(env, p1, p2):
-            print(f"使用 {algorithm} 算法验证失败：路径段存在碰撞")
+    # 检查是否有错误发生
+    if planning_error is not None:
+        print(f"验证过程出错: {str(planning_error)}")
+        return False
+
+    if not path:
+        print("路径验证失败：无法找到可行路径")
+        return False
+
+    # 快速验证路径连续性和碰撞
+    # 使用较少的采样点进行快速检查
+    for i in range(len(path) - 1):
+        p1 = path[i]
+        p2 = path[i + 1]
+        if not check_line_collision_free(env, p1, p2, steps=5):  # 减少采样点数
+            print("路径验证失败：路径段存在碰撞")
             return False
 
-    # 2. 使用A*进行额外验证（如果主验证不是A*）
-    if algorithm != 'astar':
-        astar = AStar(**common_params, resolution=0.5, diagonal_movement=True)
-        astar_path = astar.plan()
-        if not astar_path:
-            print("A*额外验证失败：无法找到可行路径")
-            return False
-
-        # 验证A*路径的连续性
-        for i in range(len(astar_path) - 1):
-            p1 = astar_path[i]
-            p2 = astar_path[i + 1]
-            if not check_line_collision_free(env, p1, p2):
-                print("A*额外验证失败：路径段存在碰撞")
-                return False
-
-    print(f"路径可行性验证通过（使用 {algorithm} 算法" + (" 和 A*额外验证" if algorithm != 'astar' else "") + "）")
+    print(f"路径可行性验证通过（使用 Dijkstra 算法）")
     return True
 
 
-def check_line_collision_free(env, start, end, steps=10):
+def check_line_collision_free(env, start, end, steps=5):
     """
-    检查两点之间的线段是否无碰撞
+    检查两点之间的线段是否无碰撞，使用较少的采样点加速检查
 
     参数:
         env: 环境对象
@@ -139,10 +144,21 @@ def check_line_collision_free(env, start, end, steps=10):
         end: 终点坐标
         steps: 检查点数量
     """
-    for i in range(steps + 1):
+    # 首先检查起点和终点
+    if env.check_collision(start) or env.check_collision(end):
+        return False
+
+    # 如果起点和终点距离很近，直接返回
+    dx = end[0] - start[0]
+    dy = end[1] - start[1]
+    if dx * dx + dy * dy < 4.0:  # 距离小于2个单位
+        return True
+
+    # 对较长的线段进行采样检查
+    for i in range(1, steps):  # 跳过起点和终点，因为已经检查过
         t = i / steps
-        x = start[0] + t * (end[0] - start[0])
-        y = start[1] + t * (end[1] - start[1])
+        x = start[0] + t * dx
+        y = start[1] + t * dy
         if env.check_collision((x, y)):
             return False
     return True
@@ -150,131 +166,97 @@ def check_line_collision_free(env, start, end, steps=10):
 
 def create_environment(start: tuple, goal: tuple, algorithm: str):
     """
-    创建仿真环境
+    创建仿真环境，使用优化的障碍物生成逻辑
 
     参数:
         start: 起点坐标 (x, y)
         goal: 终点坐标 (x, y)
         algorithm: 使用的规划算法
     """
-    # 创建场景生成器
-    generator = ScenarioGenerator(width=100.0, height=100.0, min_obstacle_size=2.0, max_obstacle_size=10.0, min_gap=5.0)
+    # 创建场景生成器，使用更合理的参数
+    generator = ScenarioGenerator(
+        width=100.0,
+        height=100.0,
+        min_obstacle_size=3.0,  # 增大最小尺寸，减少小障碍物
+        max_obstacle_size=12.0,  # 限制最大尺寸
+        min_gap=8.0  # 增大最小间隔，确保路径可行性
+    )
 
-    max_attempts = 10  # 最大重试次数
-    safety_margin = 5.0  # 与起点和终点的安全距离
-    min_path_width = 8.0  # 最小路径宽度
+    max_attempts = 5  # 减少最大重试次数
+    safety_margin = 8.0  # 增大安全距离
+    min_path_width = 10.0  # 增大最小路径宽度
 
-    def check_corridor_width(env, pos, direction, width):
-        """检查指定位置的走廊宽度"""
-        perpendicular = (-direction[1], direction[0])  # 垂直方向
-        for d in range(int(width / 2)):
-            test_pos = (pos[0] + perpendicular[0] * d, pos[1] + perpendicular[1] * d)
-            if env.check_collision(test_pos):
+    def check_start_goal_clearance(env, start, goal, margin):
+        """快速检查起点和终点区域是否可行"""
+        # 检查起点区域
+        for dx, dy in [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)]:
+            if env.check_collision((start[0] + dx * margin, start[1] + dy * margin)):
                 return False
-            test_pos = (pos[0] - perpendicular[0] * d, pos[1] - perpendicular[1] * d)
-            if env.check_collision(test_pos):
+            if env.check_collision((goal[0] + dx * margin, goal[1] + dy * margin)):
                 return False
         return True
 
-    def calculate_obstacle_area(obstacle):
-        """计算单个障碍物的面积"""
-        if getattr(obstacle, 'type', '') == 'circle':
-            return np.pi * obstacle.radius**2
-        else:  # rectangle
-            return obstacle.width * obstacle.height
+    def calculate_obstacle_density(env):
+        """计算障碍物密度"""
+        total_area = env.width * env.height
+        obstacle_area = 0
+        for obs in env.obstacles:
+            if getattr(obs, 'type', '') == 'circle':
+                obstacle_area += np.pi * obs.radius**2
+            else:  # rectangle
+                obstacle_area += obs.width * obs.height
+        return obstacle_area / total_area
 
     for attempt in range(max_attempts):
-        # 生成混合场景
-        env = generator.generate_mixed_scenario(num_random_obstacles=5, num_rooms=2, corridor_width=10.0)
+        print(f"正在生成场景，第 {attempt + 1} 次尝试...")
 
-        # 1. 检查起点和终点周围区域
-        start_clear = not any(
-            env.check_collision((start[0] + dx * safety_margin, start[1] + dy * safety_margin))
-            for dx, dy in [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)])
+        # 生成基本场景，减少随机障碍物数量和房间数量
+        env = generator.generate_mixed_scenario(
+            num_random_obstacles=3,  # 减少随机障碍物数量
+            num_rooms=1,  # 减少房间数量
+            corridor_width=12.0  # 增大走廊宽度
+        )
 
-        goal_clear = not any(
-            env.check_collision((goal[0] + dx * safety_margin, goal[1] + dy * safety_margin))
-            for dx, dy in [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)])
-
-        if not (start_clear and goal_clear):
-            print(f"第 {attempt + 1} 次生成的场景阻挡了起点或终点及其周围区域，重新生成...")
+        # 1. 快速检查起点和终点区域
+        if not check_start_goal_clearance(env, start, goal, safety_margin):
+            print(f"第 {attempt + 1} 次生成的场景阻挡了起点或终点区域，重新生成...")
             continue
 
-        # 2. 使用实际规划算法检查路径可行性
+        # 2. 检查障碍物密度
+        density = calculate_obstacle_density(env)
+        if density > 0.4:  # 降低允许的最大密度
+            print(f"第 {attempt + 1} 次生成的场景障碍物密度过高 ({density:.1%})，重新生成...")
+            continue
+
+        # 3. 使用 Dijkstra 验证路径可行性
         if not check_path_feasibility(env, start, goal, algorithm):
-            print(f"第 {attempt + 1} 次生成的场景中使用 {algorithm} 算法无法找到可行路径，重新生成...")
-            continue
-
-        # 3. 检查关键路径点的通行宽度
-        test_planner = AStar(start=start, goal=goal, env=env, resolution=0.5, diagonal_movement=True)
-        reference_path = test_planner.plan()
-
-        if reference_path:
-            # 检查路径上的关键点
-            path_valid = True
-            for i in range(1, len(reference_path)):
-                current = reference_path[i]
-                prev = reference_path[i - 1]
-                direction = (current[0] - prev[0], current[1] - prev[1])
-                # 归一化方向向量
-                length = np.hypot(direction[0], direction[1])
-                if length > 0:
-                    direction = (direction[0] / length, direction[1] / length)
-                    if not check_corridor_width(env, current, direction, min_path_width):
-                        path_valid = False
-                        break
-
-            if not path_valid:
-                print(f"第 {attempt + 1} 次生成的场景在路径上存在过窄通道，重新生成...")
-                continue
-
-        # 4. 验证障碍物分布
-        total_area = env.width * env.height
-        obstacle_area = sum(calculate_obstacle_area(obs) for obs in env.obstacles)
-        space_usage = obstacle_area / total_area
-
-        if space_usage > 0.6:  # 障碍物占比不超过60%
-            print(f"第 {attempt + 1} 次生成的场景障碍物密度过高 ({space_usage:.1%})，重新生成...")
+            print(f"第 {attempt + 1} 次生成的场景验证失败，重新生成...")
             continue
 
         # 所有验证都通过
-        print(f"已生成有效的混合场景（尝试次数：{attempt + 1}），包含:")
-        print("- 5个随机障碍物")
-        print("- 2个房间")
-        print("- 走廊系统")
-        print(f"起点 {start} 和终点 {goal} 及其周围 {safety_margin} 单位范围内均可达")
-        print(f"最小通道宽度: {min_path_width} 单位")
-        print(f"场景空间利用率: {space_usage:.1%}")
-        print(f"使用 {algorithm} 算法验证路径可行性：通过")
+        print(f"已生成有效场景（尝试次数：{attempt + 1}），包含:")
+        print(f"- {len(env.obstacles)} 个障碍物")
+        print(f"- 走廊宽度: {12.0} 单位")
+        print(f"- 障碍物密度: {density:.1%}")
         return env
 
-    # 如果多次尝试后仍未成功，创建一个简化的随机场景
-    print("警告：多次尝试后未能生成复杂场景，返回简化的随机场景")
+    # 如果多次尝试后仍未成功，返回简化场景
+    print("警告：多次尝试后未能生成有效场景，返回简化场景")
 
-    # 创建一个新的场景生成器，使用更大的障碍物尺寸
-    simple_generator = ScenarioGenerator(
-        width=100.0,
-        height=100.0,
-        min_obstacle_size=3.0,  # 增加最小尺寸
-        max_obstacle_size=15.0,  # 增加最大尺寸
-        min_gap=6.0  # 增加最小间隔
+    # 创建一个非常简单的场景，只包含少量大型障碍物
+    simple_env = generator.generate_random_scenario(
+        num_obstacles=4,  # 非常少的障碍物
+        density=0.3  # 低密度
     )
 
-    simple_env = simple_generator.generate_random_scenario(
-        num_obstacles=15,  # 增加到8个随机障碍物
-        density=0.5  # 略微增加密度
-    )
-
-    # 验证简化场景的可行性
+    # 验证简化场景
     if check_path_feasibility(simple_env, start, goal, algorithm):
-        print("已生成简化的随机场景：")
-        print("- 8个随机障碍物")
-        print("- 障碍物尺寸范围：3.0-15.0")
-        print("- 最小间隔：6.0")
-        print(f"- 使用 {algorithm} 算法验证路径可行性：通过")
+        print("已生成简化场景：")
+        print(f"- {len(simple_env.obstacles)} 个障碍物")
+        print("- 低密度分布")
         return simple_env
 
-    # 如果简化场景也不可行，则返回空场景
+    # 如果简化场景也不可行，返回空场景
     print("警告：简化场景验证失败，返回空场景")
     return Environment(width=100.0, height=100.0)
 
@@ -342,23 +324,32 @@ def plan_path(env, start, goal, algorithm='rrt_star', max_iterations=1000, model
     }
 
     if algorithm == 'rrt':
-        planner = RRT(**common_params, max_iterations=max_iterations, step_size=5.0)
+        planner = RRT(**common_params,
+                      max_iterations=max_iterations, step_size=5.0)
     elif algorithm == 'rrt_star':
-        planner = RRTStar(**common_params, max_iterations=max_iterations, step_size=5.0)
+        planner = RRTStar(
+            **common_params, max_iterations=max_iterations, step_size=5.0)
     elif algorithm == 'informed_rrt':
-        planner = InformedRRTStar(**common_params, max_iterations=max_iterations, step_size=5.0)
+        planner = InformedRRTStar(
+            **common_params, max_iterations=max_iterations, step_size=5.0)
     elif algorithm == 'astar':
-        planner = AStar(**common_params, resolution=1.0, diagonal_movement=True)
+        planner = AStar(**common_params, resolution=1.0,
+                        diagonal_movement=True)
     elif algorithm == 'dijkstra':
-        planner = Dijkstra(**common_params, resolution=1.0, diagonal_movement=True)
+        planner = Dijkstra(**common_params, resolution=1.0,
+                           diagonal_movement=True)
     elif algorithm == 'dstar_lite':
-        planner = DStarLite(**common_params, resolution=1.0, diagonal_movement=True)
+        planner = DStarLite(**common_params, resolution=1.0,
+                            diagonal_movement=True)
     elif algorithm == 'theta_star':
-        planner = ThetaStar(**common_params, resolution=1.0, diagonal_movement=True)
+        planner = ThetaStar(**common_params, resolution=1.0,
+                            diagonal_movement=True)
     elif algorithm == 'rl':
-        planner = RLPathPlanner(**common_params, model_path=model_path, max_steps=max_iterations)
+        planner = RLPathPlanner(
+            **common_params, model_path=model_path, max_steps=max_iterations)
     elif algorithm == 'ppo':
-        planner = PPOPathPlanner(**common_params, model_path=model_path, max_steps=max_iterations)
+        planner = PPOPathPlanner(
+            **common_params, model_path=model_path, max_steps=max_iterations)
     else:
         raise ValueError(f"不支持的算法: {algorithm}")
 
@@ -442,7 +433,8 @@ def main():
     print(f"使用算法 {args.algorithm} 进行路径规划，从 {start} 到 {goal}")
 
     for attempt in range(max_planning_attempts):
-        path, nodes = plan_path(env, start, goal, args.algorithm, args.iterations, args.model_path)
+        path, nodes = plan_path(
+            env, start, goal, args.algorithm, args.iterations, args.model_path)
 
         if path:
             print(f"路径规划成功（尝试次数：{attempt + 1}），路径长度: {len(path)}个点")
