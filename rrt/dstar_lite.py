@@ -25,6 +25,7 @@ class State:
     parent: Optional['State'] = None
     path_x: List[float] = field(default_factory=list)
     path_y: List[float] = field(default_factory=list)
+    queue_version: int = 0
 
 
 class DStarLite:
@@ -82,6 +83,7 @@ class DStarLite:
 
         # 优先队列
         self.queue = []
+        self._queue_counter = 0
 
         # 记录搜索统计信息
         self.nodes_visited = 0
@@ -94,6 +96,35 @@ class DStarLite:
         self.current = self.start
 
         # km值（用于处理动态变化）
+        self.km = 0
+
+    def _reset_search_state(self) -> None:
+        """重置单次规划状态，保证重复调用安全。"""
+        self.start.g = float('inf')
+        self.start.rhs = float('inf')
+        self.start.key = (float('inf'), float('inf'))
+        self.start.parent = None
+        self.start.path_x = [self.start.x]
+        self.start.path_y = [self.start.y]
+        self.start.queue_version = 0
+
+        self.goal.g = float('inf')
+        self.goal.rhs = 0.0
+        self.goal.key = (float('inf'), float('inf'))
+        self.goal.parent = None
+        self.goal.path_x = []
+        self.goal.path_y = []
+        self.goal.queue_version = 0
+
+        self.states = {
+            self._state_to_key(self.start): self.start,
+            self._state_to_key(self.goal): self.goal,
+        }
+        self.queue = []
+        self._queue_counter = 0
+        self.nodes_visited = 0
+        self.node_list = []
+        self.current = self.start
         self.km = 0
 
     def _state_to_key(self, state: State) -> Tuple[int, int]:
@@ -161,17 +192,16 @@ class DStarLite:
                 cost = self._get_cost(state, neighbor)
                 state.rhs = min(state.rhs, neighbor.g + cost)
 
-        # 如果状态在队列中，移除它
-        key = self._state_to_key(state)
-        for i, (_, s) in enumerate(self.queue):
-            if self._state_to_key(s) == key:
-                self.queue.pop(i)
-                break
-
-        # 如果状态不一致，加入队列
+        state.queue_version += 1
         if state.g != state.rhs:
             state.key = self._calculate_key(state)
-            heapq.heappush(self.queue, (state.key, state))
+            self._queue_counter += 1
+            heapq.heappush(
+                self.queue,
+                (state.key[0], state.key[1], self._queue_counter, state.queue_version, state),
+            )
+        else:
+            state.key = (float("inf"), float("inf"))
 
     def _get_cost(self, state1: State, state2: State) -> float:
         """计算两个状态之间的代价"""
@@ -183,10 +213,14 @@ class DStarLite:
     def _compute_shortest_path(self):
         """计算最短路径"""
         while (self.queue and
-                (self.queue[0][0] < self._calculate_key(self.current) or
+                ((self.queue[0][0], self.queue[0][1]) < self._calculate_key(self.current) or
                  self.current.rhs != self.current.g)):
 
-            k_old, state = heapq.heappop(self.queue)
+            k1, k2, _, version, state = heapq.heappop(self.queue)
+            if version != state.queue_version:
+                continue
+
+            k_old = (k1, k2)
             self.nodes_visited += 1
             self.node_list.append(state)
 
@@ -194,7 +228,11 @@ class DStarLite:
 
             if k_old < k_new:
                 state.key = k_new
-                heapq.heappush(self.queue, (k_new, state))
+                self._queue_counter += 1
+                heapq.heappush(
+                    self.queue,
+                    (k_new[0], k_new[1], self._queue_counter, state.queue_version, state),
+                )
             elif state.g > state.rhs:
                 state.g = state.rhs
                 for neighbor in self._get_neighbors(state):
@@ -232,6 +270,7 @@ class DStarLite:
         返回:
             规划得到的路径，由坐标点组成的列表
         """
+        self._reset_search_state()
         # 初始化目标状态
         self._update_state(self.goal)
 

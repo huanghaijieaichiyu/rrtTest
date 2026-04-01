@@ -123,6 +123,8 @@ class PPOPathPlanner:
         model_path: Optional[str] = None,
         resolution: float = 1.0,
         max_steps: int = 1000,
+        vehicle_width: float = 2.0,
+        vehicle_length: float = 4.0,
         device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
     ):
         """
@@ -143,6 +145,8 @@ class PPOPathPlanner:
         self.resolution = resolution
         self.max_steps = max_steps
         self.device = device
+        self.vehicle_width = vehicle_width
+        self.vehicle_length = vehicle_length
 
         # 计算区域边界
         self.min_x = 0
@@ -203,7 +207,11 @@ class PPOPathPlanner:
                         self.min_y <= grid_y <= self.max_y):
                     state.append(1.0)  # 超出范围视为障碍物
                 else:
-                    is_obstacle = self.env.check_collision((grid_x, grid_y))
+                    is_obstacle = self.env.check_collision(
+                        (grid_x, grid_y),
+                        self.vehicle_width,
+                        self.vehicle_length,
+                    )
                     state.append(1.0 if is_obstacle else 0.0)
 
         return torch.tensor(state, dtype=torch.float32).to(self.device)
@@ -218,7 +226,11 @@ class PPOPathPlanner:
         if not (self.min_x <= x <= self.max_x and
                 self.min_y <= y <= self.max_y):
             return False
-        return not self.env.check_collision((x, y))
+        return not self.env.check_collision(
+            (x, y),
+            self.vehicle_width,
+            self.vehicle_length,
+        )
 
     def load_model(self, model_path: str) -> None:
         """加载预训练模型"""
@@ -237,6 +249,11 @@ class PPOPathPlanner:
         返回:
             规划得到的路径，由坐标点组成的列表
         """
+        self.node_list = []
+        self.start.parent = None
+        self.start.path_x = [self.start.x]
+        self.start.path_y = [self.start.y]
+
         current = self.start
         self.node_list.append(current)
 

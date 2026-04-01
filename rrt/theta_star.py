@@ -104,31 +104,22 @@ class ThetaStar:
         返回:
             是否有直线视线
         """
-        x1, y1 = node1.x, node1.y
-        x2, y2 = node2.x, node2.y
+        if hasattr(self.env, "check_segment_collision"):
+            return not self.env.check_segment_collision(
+                (node1.x, node1.y),
+                (node2.x, node2.y),
+                self.vehicle_width,
+                self.vehicle_length,
+            )
 
-        dx = abs(x2 - x1)
-        dy = abs(y2 - y1)
-        x = x1
-        y = y1
-        n = int(1 + dx + dy)  # Convert to integer for range
-        x_inc = 1 if x2 > x1 else -1
-        y_inc = 1 if y2 > y1 else -1
-        error = dx - dy
-        dx *= 2
-        dy *= 2
-
-        for _ in range(n):
+        distance = np.hypot(node2.x - node1.x, node2.y - node1.y)
+        steps = max(int(distance / max(self.resolution * 0.5, 1e-6)), 1)
+        for index in range(steps + 1):
+            t = index / steps
+            x = node1.x + (node2.x - node1.x) * t
+            y = node1.y + (node2.y - node1.y) * t
             if self.env.check_collision((x, y), self.vehicle_width, self.vehicle_length):
                 return False
-
-            if error > 0:
-                x += x_inc
-                error -= dy
-            else:
-                y += y_inc
-                error += dx
-
         return True
 
     def _get_neighbors(self, node: Node) -> List[Node]:
@@ -163,6 +154,13 @@ class ThetaStar:
             # 检查是否碰撞
             if self.env.check_collision((new_x, new_y), self.vehicle_width, self.vehicle_length):
                 continue
+
+            if dx != 0 and dy != 0:
+                if (
+                    self.env.check_collision((node.x + dx * self.resolution, node.y), self.vehicle_width, self.vehicle_length)
+                    or self.env.check_collision((node.x, node.y + dy * self.resolution), self.vehicle_width, self.vehicle_length)
+                ):
+                    continue
 
             # 创建新节点
             neighbor = Node(
@@ -250,12 +248,24 @@ class ThetaStar:
         返回:
             规划得到的路径，由坐标点组成的列表
         """
+        self.nodes_visited = 0
+        self.node_list = []
+        self.start.parent = None
+        self.start.g_score = 0.0
+        self.start.f_score = self._h_cost(self.start)
+        self.start.path_x = [self.start.x]
+        self.start.path_y = [self.start.y]
+        self.goal.parent = None
+        self.goal.path_x = []
+        self.goal.path_y = []
+
         # 初始化优先队列
         open_set = []
         heapq.heappush(open_set, self.start)
 
         # 记录已经访问的节点
         closed_set: Set[Tuple[int, int]] = set()
+        g_scores = {self._node_to_grid_key(self.start.x, self.start.y): 0.0}
 
         while open_set:
             # 取出f值最小的节点
@@ -287,8 +297,9 @@ class ThetaStar:
                 # 更新邻居节点
                 self._update_vertex(current, neighbor)
 
-                # 将邻居加入open set
-                heapq.heappush(open_set, neighbor)
+                if neighbor.g_score < g_scores.get(neighbor_key, float("inf")):
+                    g_scores[neighbor_key] = neighbor.g_score
+                    heapq.heappush(open_set, neighbor)
 
         # 如果没有找到路径，返回空列表
         return []

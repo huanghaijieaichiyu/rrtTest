@@ -979,7 +979,10 @@ def interactive_planning(simulator, env, start, args):
                 return
 
             # 计算控制输入
-            throttle, brake, steer = simulator.follower.get_control(vehicle)
+            throttle, brake, steer = simulator.follower.get_control(
+                vehicle,
+                dt * simulation_speed,
+            )
 
             # 更新车辆状态
             vehicle.update(throttle, brake, steer, dt * simulation_speed)

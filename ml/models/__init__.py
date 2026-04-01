@@ -6,6 +6,8 @@
 """
 
 from ml.models.rrt_nn import (
+    CollisionNet,
+    HeuristicNet,
     NeuralRRT,
     SamplingNetwork,
     EvaluationNetwork,
@@ -13,7 +15,9 @@ from ml.models.rrt_nn import (
 )
 
 __all__ = [
+    'CollisionNet',
     'NeuralRRT',
+    'HeuristicNet',
     'SamplingNetwork',
     'EvaluationNetwork',
     'OptimizationNetwork'

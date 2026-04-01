@@ -200,6 +200,15 @@ class AStar:
         返回:
             规划得到的路径，由坐标点组成的列表
         """
+        self.nodes_visited = 0
+        self.node_list = []
+        self.start.parent = None
+        self.start.path_x = [self.start.x]
+        self.start.path_y = [self.start.y]
+        self.goal.parent = None
+        self.goal.path_x = []
+        self.goal.path_y = []
+
         # 初始化优先队列（open set）
         open_set = []
         heapq.heappush(open_set, self.start)

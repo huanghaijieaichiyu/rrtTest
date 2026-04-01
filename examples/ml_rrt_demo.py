@@ -1,29 +1,28 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
+import os
+import sys
+import time
+
+# 添加项目根目录到Python路径
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 """
 机器学习增强RRT算法演示脚本
 
 演示如何使用PyTorch神经网络增强RRT算法的路径规划效果。
 """
 
-from ml.models.rrt_nn import SamplingNetwork, CollisionNet, HeuristicNet
-from simulation.visualization import Visualization
-from simulation.environment import Environment
-from rrt.rrt_star import RRTStar
-from rrt.rrt_base import RRT
-import os
-import sys
-import numpy as np
 import matplotlib.pyplot as plt
-import time
+import numpy as np
 import torch
 import yaml
 
-# 添加项目根目录到Python路径
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-# 导入项目模块
+from ml.models.rrt_nn import SamplingNetwork, CollisionNet, HeuristicNet
+from rrt.rrt_star import RRTStar
+from simulation.environment import Environment
+from simulation.visualization import Visualization
 
 
 class MLEnhancedRRT(RRTStar):
@@ -150,30 +149,28 @@ class MLEnhancedRRT(RRTStar):
             return super()._check_collision(node1, node2)
 
     def _calc_new_cost(self, from_node, to_node):
-        """计算代价，可选择使用ML启发式函数"""
-        # 基础代价（欧几里得距离）
+        """
+        计算代价，可选择记录 ML 启发式估计。
+
+        这里保持“真实累计代价”单调递增，避免把启发式值直接写入树代价后
+        在 RRT* 重连阶段形成父子环。
+        """
         base_cost = super()._calc_new_cost(from_node, to_node)
 
-        # 是否使用ML启发式函数
         if self.heuristic_network and self.use_ml_heuristic:
-            # 使用ML启发式函数
             self.stats['ml_heuristics'] += 1
-
-            # 估计代价
-            ml_cost = self.heuristic_network.estimate_cost(
+            heuristic_cost = self.heuristic_network.estimate_cost(
                 node_pos=(to_node.x, to_node.y),
                 goal_pos=(self.goal.x, self.goal.y),
                 width=self.max_x - self.min_x,
                 height=self.max_y - self.min_y,
                 device=self.device
             )
+            # 仅保留统计和一个稳定的轻微偏置，但不允许低于真实代价。
+            return max(base_cost, base_cost + 0.05 * max(0.0, heuristic_cost))
 
-            # 组合代价（这里简单地加权平均）
-            return 0.7 * base_cost + 0.3 * ml_cost
-        else:
-            # 使用基础代价
-            self.stats['euclidean_heuristics'] += 1
-            return base_cost
+        self.stats['euclidean_heuristics'] += 1
+        return base_cost
 
 
 def load_config(config_path):
@@ -217,7 +214,7 @@ def main():
         y = np.random.uniform(10, 90)
         width = np.random.uniform(5, 15)
         height = np.random.uniform(5, 15)
-        angle = np.random.uniform(0, 2 * np.pi)
+        angle = np.random.uniform(0, 360)
         env.add_obstacle(
             x, y, obstacle_type="rectangle",
             width=width, height=height, angle=angle

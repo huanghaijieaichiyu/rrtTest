@@ -12,7 +12,7 @@ RRT基础算法实现
 
 import numpy as np
 import matplotlib.pyplot as plt
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Set
 
 
 class Node:
@@ -96,6 +96,7 @@ class RRT:
         self.search_radius = search_radius
         self.vehicle_width = vehicle_width
         self.vehicle_length = vehicle_length
+        self.goal_tolerance = max(self.step_size, self.vehicle_length * 0.5)
 
         # 初始化树
         self.node_list = [self.start]
@@ -107,18 +108,35 @@ class RRT:
         self.min_x, self.max_x = self._calculate_x_bounds()
         self.min_y, self.max_y = self._calculate_y_bounds()
 
+    def _reset_search_state(self) -> None:
+        """重置单次规划的搜索状态，保证 plan() 可重复调用。"""
+        self.start.parent = None
+        self.start.cost = 0.0
+        self.start.path_x = [self.start.x]
+        self.start.path_y = [self.start.y]
+
+        self.goal.parent = None
+        self.goal.cost = float("inf")
+        self.goal.path_x = []
+        self.goal.path_y = []
+
+        self.node_list = [self.start]
+        self.path = []
+
     def _calculate_x_bounds(self) -> Tuple[float, float]:
         """计算x轴方向的边界"""
-        # 可以从环境中获取，这里简化处理
-        min_x = min(self.start.x, self.goal.x) - self.search_radius
-        max_x = max(self.start.x, self.goal.x) + self.search_radius
+        env_min_x = 0.0
+        env_max_x = float(getattr(self.env, "width", max(self.start.x, self.goal.x)))
+        min_x = max(env_min_x, min(self.start.x, self.goal.x) - self.search_radius)
+        max_x = min(env_max_x, max(self.start.x, self.goal.x) + self.search_radius)
         return min_x, max_x
 
     def _calculate_y_bounds(self) -> Tuple[float, float]:
         """计算y轴方向的边界"""
-        # 可以从环境中获取，这里简化处理
-        min_y = min(self.start.y, self.goal.y) - self.search_radius
-        max_y = max(self.start.y, self.goal.y) + self.search_radius
+        env_min_y = 0.0
+        env_max_y = float(getattr(self.env, "height", max(self.start.y, self.goal.y)))
+        min_y = max(env_min_y, min(self.start.y, self.goal.y) - self.search_radius)
+        max_y = min(env_max_y, max(self.start.y, self.goal.y) + self.search_radius)
         return min_y, max_y
 
     def plan(self) -> List[Tuple[float, float]]:
@@ -128,6 +146,7 @@ class RRT:
         返回:
             path: 规划得到的路径，由坐标点组成的列表
         """
+        self._reset_search_state()
         for i in range(self.max_iterations):
             # 随机采样
             if np.random.random() < self.goal_sample_rate:
@@ -143,7 +162,7 @@ class RRT:
             new_node = self._steer(nearest_node, rnd)
 
             # 碰撞检测
-            if not self._check_collision(new_node, nearest_node):
+            if not self._check_collision(nearest_node, new_node):
                 continue
 
             # 添加新节点
@@ -163,13 +182,8 @@ class RRT:
 
     def _random_node(self) -> Node:
         """生成随机节点"""
-        # 在区域内随机采样
-        x = np.random.uniform(0, self.env.width)
-        y = np.random.uniform(0, self.env.height)
-
-        # 打印调试信息
-        print(f"生成随机节点: ({x:.2f}, {y:.2f})")
-
+        x = np.random.uniform(self.min_x, self.max_x)
+        y = np.random.uniform(self.min_y, self.max_y)
         return Node(x, y)
 
     def _get_nearest_node_index(self, node: Node) -> int:
@@ -203,54 +217,92 @@ class RRT:
         new_node.path_x.append(new_x)
         new_node.path_y.append(new_y)
 
-        # 更新代价
-        new_node.cost = from_node.cost + self.step_size
-
-        print(f"扩展节点: 从 ({from_node.x:.2f}, {from_node.y:.2f}) 到 ({new_x:.2f}, {new_y:.2f})")
+        actual_step = np.hypot(new_x - from_node.x, new_y - from_node.y)
+        new_node.cost = from_node.cost + actual_step
 
         return new_node
 
     def _check_collision(self, node1: Node, node2: Node) -> bool:
         """检查两个节点之间的路径是否无碰撞"""
-        # 实际实现中，应该调用环境的碰撞检测功能
-        # 这里假设环境有一个check_segment方法
-        result = self._check_segment(node1, node2)
-        print(f"碰撞检测: 从 ({node1.x:.2f}, {node1.y:.2f}) 到 ({node2.x:.2f}, {node2.y:.2f}) - {'无碰撞' if result else '有碰撞'}")
-        return result
+        return self._check_segment(node1, node2)
 
     def _check_segment(self, node1: Node, node2: Node) -> bool:
         """检查两点之间的线段是否无碰撞，考虑车辆尺寸"""
-        # 调用环境的碰撞检测，传入车辆尺寸参数
-        print(f"DEBUG RRT: 检查线段 ({node1.x:.2f}, {node1.y:.2f}) -> ({node2.x:.2f}, {node2.y:.2f})")
-        result = not self.env.check_segment_collision((node1.x, node1.y),
-                                                      (node2.x, node2.y), self.vehicle_width, self.vehicle_length)
-        print(f"DEBUG RRT: 线段碰撞检测结果: {'无碰撞' if result else '有碰撞'}")
-        return result
+        if hasattr(self.env, "check_segment_collision"):
+            return not self.env.check_segment_collision(
+                (node1.x, node1.y),
+                (node2.x, node2.y),
+                self.vehicle_width,
+                self.vehicle_length,
+            )
+
+        distance = np.hypot(node2.x - node1.x, node2.y - node1.y)
+        steps = max(int(distance / max(self.step_size * 0.5, 1e-6)), 1)
+        for index in range(steps + 1):
+            t = index / steps
+            x = node1.x + (node2.x - node1.x) * t
+            y = node1.y + (node2.y - node1.y) * t
+            if self.env.check_collision((x, y), self.vehicle_width, self.vehicle_length):
+                return False
+        return True
 
     def _is_near_goal(self, node: Node) -> bool:
         """检查节点是否靠近目标点"""
         dist = np.hypot(node.x - self.goal.x, node.y - self.goal.y)
-        # 增加容忍度，使用更大的阈值
-        return dist < self.step_size * 5.0  # 原来是 self.step_size
+        return dist <= self.goal_tolerance
 
     def _connect_to_goal(self, node: Node) -> None:
         """将节点连接到目标点"""
+        if node is self.goal:
+            print("警告: 检测到尝试将 goal 连接到自身，已忽略该连接")
+            return
+
+        lineage_ids: Set[int] = set()
+        cursor: Optional[Node] = node
+        while cursor is not None:
+            cursor_id = id(cursor)
+            if cursor_id in lineage_ids:
+                print("警告: 连接 goal 前发现父链环路，已忽略该连接")
+                return
+            if cursor is self.goal:
+                print("警告: 检测到 goal 被纳入扩展父链，已拒绝该回连")
+                return
+            lineage_ids.add(cursor_id)
+            cursor = cursor.parent
+
+        new_cost = node.cost + np.hypot(self.goal.x - node.x, self.goal.y - node.y)
+        if self.goal.parent is not None and new_cost >= self.goal.cost:
+            return
+
         self.goal.parent = node
         self.goal.path_x = node.path_x.copy()
         self.goal.path_y = node.path_y.copy()
         self.goal.path_x.append(self.goal.x)
         self.goal.path_y.append(self.goal.y)
-        self.goal.cost = node.cost + np.hypot(self.goal.x - node.x, self.goal.y - node.y)
-        self.node_list.append(self.goal)
+        self.goal.cost = new_cost
+        if self.goal not in self.node_list:
+            self.node_list.append(self.goal)
 
     def _extract_path(self) -> List[Tuple[float, float]]:
         """提取路径坐标"""
         path = []
         node = self.goal
+        visited_ids: Set[int] = set()
 
         while node.parent:
+            node_id = id(node)
+            if node_id in visited_ids:
+                print("错误: 提取路径时检测到父链环路，已返回空路径")
+                self.path = []
+                return []
+            visited_ids.add(node_id)
             path.append((node.x, node.y))
             node = node.parent
+
+        if node is not self.start:
+            print("错误: 提取路径时未回溯到起点，已返回空路径")
+            self.path = []
+            return []
 
         path.append((self.start.x, self.start.y))
         path.reverse()

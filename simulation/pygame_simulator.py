@@ -8,8 +8,10 @@ Pygame 车辆仿真器
 """
 
 import os
-import time
 import math
+import platform
+import sys
+import time
 import matplotlib
 import numpy as np
 import pygame
@@ -17,7 +19,8 @@ import yaml
 from typing import List, Tuple, Dict, Optional, Union, Any
 from shapely.geometry import Point, Polygon, LineString
 
-from .environment import CircleObstacle, Environment, RectangleObstacle
+from .environment import Environment
+from .obstacles import CircleObstacle, DynamicObstacle, RectangleObstacle
 
 # 颜色定义
 BLACK = (0, 0, 0)
@@ -31,41 +34,263 @@ GRAY = (200, 200, 200)
 # 字体设置
 
 
-def get_font(size: int = 24) -> pygame.font.Font:
-    """获取支持中文的字体"""
-    # 尝试加载系统字体
-    system_fonts = [
-        # Windows 字体
-        "SimHei",  # 黑体
-        "Microsoft YaHei",  # 微软雅黑
-        "SimSun",  # 宋体
-        # Linux 字体
-        "WenQuanYi Micro Hei",  # 文泉驿微米黑
-        "Noto Sans CJK SC",  # Google Noto 字体
-        "Droid Sans Fallback",  # Android 默认字体
-        # macOS 字体
-        "PingFang SC",  # 苹方
-        "STHeiti"  # 华文黑体
-    ]
+_FONT_CACHE: Dict[Tuple[int, str], pygame.font.Font] = {}
+_FONT_RESOLUTION: Dict[str, Dict[str, str]] = {}
+_FONT_OVERRIDE_CANDIDATES: Dict[str, Dict[str, List[str]]] = {}
+_FONT_SAMPLE_TEXTS = (
+    "停车位姿A9",
+    "目标车位",
+    "状态提示",
+)
+_FONT_PLACEHOLDER_SAMPLES = ("□□□□", "????", "口口口口")
+_BUNDLED_FONTS_DIR = os.path.join(os.path.dirname(__file__), "fonts")
+_DEFAULT_LOG_DIR = os.path.join(os.getcwd(), "logs")
+_DEFAULT_LOG_FILE = os.path.join(_DEFAULT_LOG_DIR, "parking_demo.log")
+_FONT_ROLE_CANDIDATES = {
+    "ui": {
+        "windows": [
+            "Microsoft YaHei UI",
+            "Microsoft YaHei",
+            "SimHei",
+            "DengXian",
+            "SimSun",
+        ],
+        "linux": [
+            "Noto Sans CJK SC",
+            "WenQuanYi Micro Hei",
+            "Source Han Sans SC",
+            "Droid Sans Fallback",
+        ],
+        "darwin": [
+            "PingFang SC",
+            "Hiragino Sans GB",
+            "STHeiti",
+        ],
+        "generic": ["Noto Sans CJK SC", "Source Han Sans SC", "Arial Unicode MS"],
+        "bundled": [
+            "NotoSansCJKsc-Regular.otf",
+        ],
+    },
+    "title": {
+        "windows": [
+            "Microsoft YaHei UI",
+            "Microsoft YaHei",
+            "DengXian",
+            "SimHei",
+        ],
+        "linux": [
+            "Noto Sans CJK SC",
+            "Source Han Sans SC",
+            "WenQuanYi Micro Hei",
+        ],
+        "darwin": ["PingFang SC", "STKaiti"],
+        "generic": ["Noto Sans CJK SC", "Source Han Sans SC"],
+        "bundled": ["STKAITI.TTF", "NotoSansCJKsc-Regular.otf"],
+    },
+    "mono": {
+        "windows": [
+            "Sarasa Mono SC",
+            "Microsoft YaHei UI",
+            "Consolas",
+        ],
+        "linux": [
+            "Sarasa Mono SC",
+            "WenQuanYi Zen Hei Mono",
+            "Noto Sans Mono CJK SC",
+            "Noto Sans CJK SC",
+        ],
+        "darwin": [
+            "PingFang SC",
+            "Menlo",
+        ],
+        "generic": ["Sarasa Mono SC", "Noto Sans CJK SC", "DejaVu Sans Mono"],
+        "bundled": [
+            "NotoSansCJKsc-Regular.otf",
+        ],
+    },
+}
 
-    # 尝试按优先级加载字体
-    for font_name in system_fonts:
-        try:
-            return pygame.font.SysFont(font_name, size)
-        except:
+
+def _merge_unique(items: List[str]) -> List[str]:
+    merged: List[str] = []
+    seen = set()
+    for item in items:
+        if not item or item in seen:
+            continue
+        merged.append(item)
+        seen.add(item)
+    return merged
+
+
+def _coerce_font_entries(value: Any) -> List[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, (list, tuple)):
+        return [str(item) for item in value if item]
+    return []
+
+
+def configure_font_preferences(font_config: Optional[Dict[str, Any]] = None) -> None:
+    """根据配置覆盖字体候选列表。"""
+    global _FONT_OVERRIDE_CANDIDATES
+
+    font_config = font_config or {}
+    if not isinstance(font_config, dict):
+        return
+
+    overrides: Dict[str, Dict[str, List[str]]] = {}
+    for role in ("ui", "title", "mono"):
+        role_config: Any = font_config.get(role, {})
+        if role == "ui" and not role_config and any(
+            key in font_config for key in ("preferred", "names", "system", "bundled", "files")
+        ):
+            role_config = font_config
+
+        if isinstance(role_config, (str, list, tuple)):
+            role_config = {"preferred": role_config}
+        if not isinstance(role_config, dict):
             continue
 
-    # 如果系统字体都不可用，尝试加载自带字体文件
-    try:
-        font_path = os.path.join(os.path.dirname(
-            __file__), "fonts", "simhei.ttf")
-        if os.path.exists(font_path):
-            return pygame.font.Font(font_path, size)
-    except:
-        pass
+        names = _merge_unique(
+            _coerce_font_entries(role_config.get("preferred"))
+            + _coerce_font_entries(role_config.get("names"))
+            + _coerce_font_entries(role_config.get("system"))
+        )
+        bundled = _merge_unique(
+            _coerce_font_entries(role_config.get("bundled"))
+            + _coerce_font_entries(role_config.get("files"))
+        )
+        if names or bundled:
+            overrides[role] = {"names": names, "bundled": bundled}
 
-    # 如果都失败了，使用默认字体
-    return pygame.font.Font(None, size)
+    if overrides == _FONT_OVERRIDE_CANDIDATES:
+        return
+
+    _FONT_OVERRIDE_CANDIDATES = overrides
+    _FONT_CACHE.clear()
+    _FONT_RESOLUTION.clear()
+
+
+def _font_signature(font: pygame.font.Font, sample_text: str) -> Tuple[Tuple[int, int], int, int]:
+    surface = font.render(sample_text, True, WHITE)
+    alpha = pygame.surfarray.array_alpha(surface)
+    return alpha.shape, int(alpha.sum()), int(np.count_nonzero(alpha))
+
+
+def _font_supports_chinese(font: pygame.font.Font) -> bool:
+    try:
+        placeholder_signatures = {
+            _font_signature(font, placeholder)
+            for placeholder in _FONT_PLACEHOLDER_SAMPLES
+        }
+        for sample_text in _FONT_SAMPLE_TEXTS:
+            sample_signature = _font_signature(font, sample_text)
+            if sample_signature[1] <= 0 or sample_signature[2] <= 0:
+                return False
+            if sample_signature in placeholder_signatures:
+                return False
+        return True
+    except Exception:
+        return False
+
+
+def _font_platform_key() -> str:
+    system_name = platform.system().lower()
+    if system_name.startswith("win"):
+        return "windows"
+    if system_name.startswith("darwin"):
+        return "darwin"
+    return "linux"
+
+
+def _candidate_font_names(role: str) -> List[str]:
+    role_config = _FONT_ROLE_CANDIDATES.get(role, _FONT_ROLE_CANDIDATES["ui"])
+    platform_key = _font_platform_key()
+    override = _FONT_OVERRIDE_CANDIDATES.get(role, {})
+    return _merge_unique(
+        override.get("names", [])
+        + role_config.get(platform_key, [])
+        + role_config.get("generic", [])
+    )
+
+
+def _candidate_font_files(role: str) -> List[str]:
+    role_config = _FONT_ROLE_CANDIDATES.get(role, _FONT_ROLE_CANDIDATES["ui"])
+    override = _FONT_OVERRIDE_CANDIDATES.get(role, {})
+    files = override.get("bundled", []) + role_config.get("bundled", [])
+    resolved: List[str] = []
+    for filename in _merge_unique(files):
+        resolved.append(filename if os.path.isabs(filename) else os.path.join(_BUNDLED_FONTS_DIR, filename))
+    return resolved
+
+
+def get_font_resolution(role: str = "ui") -> Dict[str, str]:
+    """返回指定字体角色的解析结果。"""
+    if role not in _FONT_RESOLUTION:
+        get_font(16, role=role)
+    return dict(_FONT_RESOLUTION.get(role, {}))
+
+
+def get_font(size: int = 24, role: str = "ui") -> pygame.font.Font:
+    """按角色解析字体，并优先选择可正常渲染中文的字体。"""
+    cache_key = (size, role)
+    if cache_key in _FONT_CACHE:
+        return _FONT_CACHE[cache_key]
+
+    if not pygame.font.get_init():
+        pygame.font.init()
+
+    for font_name in _candidate_font_names(role):
+        matched_path = None
+        try:
+            matched_path = pygame.font.match_font(font_name)
+        except Exception:
+            matched_path = None
+        try:
+            font = (
+                pygame.font.Font(matched_path, size)
+                if matched_path and os.path.exists(matched_path)
+                else pygame.font.SysFont(font_name, size)
+            )
+        except Exception:
+            continue
+        if not _font_supports_chinese(font):
+            continue
+        _FONT_CACHE[cache_key] = font
+        _FONT_RESOLUTION[role] = {
+            "role": role,
+            "source": "system",
+            "name": font_name,
+            "path": matched_path or "",
+        }
+        return font
+
+    for font_path in _candidate_font_files(role):
+        if not os.path.exists(font_path):
+            continue
+        try:
+            font = pygame.font.Font(font_path, size)
+        except Exception:
+            continue
+        if not _font_supports_chinese(font):
+            continue
+        _FONT_CACHE[cache_key] = font
+        _FONT_RESOLUTION[role] = {
+            "role": role,
+            "source": "bundled",
+            "name": os.path.basename(font_path),
+            "path": font_path,
+        }
+        return font
+
+    fallback_font = pygame.font.Font(None, size)
+    _FONT_CACHE[cache_key] = fallback_font
+    _FONT_RESOLUTION[role] = {
+        "role": role,
+        "source": "pygame-default",
+        "name": "default",
+    }
+    return fallback_font
 
 
 class VehicleModel:
@@ -92,6 +317,10 @@ class VehicleModel:
         self.front_steer_angle = 0.0  # 前轮转向角(弧度)
         self.rear_steer_angle = 0.0  # 后轮转向角(弧度)
         self.wheelbase = 2.7  # 轴距(米)
+        # 兼容旧仿真代码中常用的字段命名
+        self.v = self.speed
+        self.a = self.acceleration
+        self.steer_angle = self.front_steer_angle
 
         # 车轮参数
         self.wheel_width = 0.25 * width  # 车轮宽度
@@ -102,9 +331,25 @@ class VehicleModel:
 
         # 车辆控制参数
         self.max_speed = 5.0  # m/s
+        self.max_reverse_speed = 2.5  # m/s
         self.max_accel = 2.0  # m/s^2
         self.max_brake = 4.0  # m/s^2
         self.max_steer = math.pi / 4  # 最大转向角(弧度)
+        self.steer_response = math.pi  # 转向响应速度(rad/s)
+        self.rolling_resistance = 0.2  # 简单滚阻(m/s^2)
+        self.drag_coefficient = 0.015  # 近似空气阻力
+        self.creep_speed = 0.35  # 松油门蠕行目标速度
+        self.creep_accel = 0.45  # 蠕行加速度
+        self.jerk_limit = 6.0  # 纵向 jerk 上限
+        self.throttle_response = 2.4  # 油门建立速度
+        self.brake_response = 4.0  # 制动建立速度
+        self.steer_speed_sensitivity = 0.08  # 高速时削弱最大转角
+        self.reverse = False  # 当前是否挂入倒挡
+        self.applied_throttle = 0.0
+        self.applied_brake = 0.0
+        self.last_throttle = 0.0
+        self.last_brake = 0.0
+        self.last_steer = 0.0
 
         # 四轮转向模式
         self.steering_mode = "normal"  # 可选: "normal", "counter", "crab"
@@ -318,95 +563,124 @@ class VehicleModel:
             steer: 转向输入[-1, 1]
             dt: 时间步长(秒)
         """
-        # 计算加速度
-        if throttle > 0:
-            self.acceleration = throttle * self.max_accel
-        else:
-            self.acceleration = 0
+        throttle = max(0.0, min(1.0, throttle))
+        brake = max(0.0, min(1.0, brake))
+        steer = max(-1.0, min(1.0, steer))
+        self.last_throttle = throttle
+        self.last_brake = brake
+        self.last_steer = steer
 
-        if brake > 0:
-            self.acceleration -= brake * self.max_brake
+        throttle_delta_limit = self.throttle_response * dt
+        brake_delta_limit = self.brake_response * dt
+        self.applied_throttle += max(
+            -throttle_delta_limit,
+            min(throttle - self.applied_throttle, throttle_delta_limit),
+        )
+        self.applied_brake += max(
+            -brake_delta_limit,
+            min(brake - self.applied_brake, brake_delta_limit),
+        )
 
-        # 更新速度
-        self.speed += self.acceleration * dt
-        self.speed = max(0, min(self.speed, self.max_speed))  # 限制速度范围
+        speed_factor = 1.0 / (1.0 + self.steer_speed_sensitivity * abs(self.speed))
+        effective_max_steer = max(math.radians(8.0), self.max_steer * speed_factor)
 
-        # 更新前轮转向角
-        self.front_steer_angle = steer * self.max_steer
+        # 计算目标前轮转向角，并施加转向速率限制，避免瞬时满打方向
+        target_front_steer = steer * effective_max_steer
+        max_steer_delta = self.steer_response * dt
+        steer_delta = target_front_steer - self.front_steer_angle
+        steer_delta = max(-max_steer_delta, min(max_steer_delta, steer_delta))
+        self.front_steer_angle += steer_delta
 
         # 根据转向模式更新后轮转向角
         if self.steering_mode == "normal":
             # 普通模式：后轮不转向
-            self.rear_steer_angle = 0
+            target_rear_steer = 0.0
         elif self.steering_mode == "counter":
             # 反向模式：后轮反向转向，提高转弯半径
-            self.rear_steer_angle = -self.front_steer_angle * self.rear_steer_ratio
+            target_rear_steer = -self.front_steer_angle * self.rear_steer_ratio
         elif self.steering_mode == "crab":
             # 蟹行模式：后轮同向转向，实现横向移动
-            self.rear_steer_angle = self.front_steer_angle * self.rear_steer_ratio
+            target_rear_steer = self.front_steer_angle * self.rear_steer_ratio
+        else:
+            target_rear_steer = 0.0
 
-        # 四轮转向模型
-        if abs(self.speed) > 0.1:  # 当速度足够大时才转向
-            # 计算前后轮的转向角度
+        rear_steer_delta = target_rear_steer - self.rear_steer_angle
+        rear_steer_delta = max(-max_steer_delta, min(max_steer_delta, rear_steer_delta))
+        self.rear_steer_angle += rear_steer_delta
+
+        # 计算纵向加速度，支持倒车和符号感知制动
+        drive_acceleration = self.applied_throttle * self.max_accel
+        target_acceleration = -drive_acceleration if self.reverse else drive_acceleration
+
+        if (
+            not self.reverse
+            and self.applied_throttle < 0.03
+            and self.applied_brake < 0.05
+            and self.speed >= -0.05
+            and self.speed < self.creep_speed
+        ):
+            target_acceleration = max(target_acceleration, self.creep_accel)
+
+        if self.applied_brake > 0:
+            if abs(self.speed) > 1e-4:
+                target_acceleration += -math.copysign(self.applied_brake * self.max_brake, self.speed)
+            else:
+                target_acceleration = 0.0
+        elif abs(self.speed) > 1e-4 and self.applied_throttle < 0.02:
+            drag = self.rolling_resistance + self.drag_coefficient * abs(self.speed) * abs(self.speed)
+            target_acceleration += -math.copysign(drag, self.speed)
+
+        max_accel_delta = self.jerk_limit * dt
+        accel_delta = target_acceleration - self.acceleration
+        accel_delta = max(-max_accel_delta, min(max_accel_delta, accel_delta))
+        self.acceleration += accel_delta
+
+        # 更新速度，并支持倒车
+        self.speed += self.acceleration * dt
+        self.speed = max(-self.max_reverse_speed, min(self.speed, self.max_speed))
+
+        # 制动至接近零速时，直接置零，避免车辆抖动
+        if self.applied_brake > 0 and abs(self.speed) < 0.05:
+            self.speed = 0.0
+        elif self.applied_throttle < 0.02 and self.applied_brake < 0.02 and abs(self.speed) < 0.02:
+            self.speed = 0.0
+
+        # 低速四轮转向运动学模型
+        if abs(self.speed) > 1e-3:
             front_angle = self.front_steer_angle
             rear_angle = self.rear_steer_angle
+            wheelbase = max(self.wheelbase, 1e-3)
+            lf = lr = wheelbase / 2.0
 
-            # 计算前后轮的转向半径
-            if abs(front_angle) > 1e-6:
-                front_radius = self.wheelbase / math.tan(abs(front_angle))
-                front_sign = 1 if front_angle > 0 else -1
-            else:
-                front_radius = float('inf')
-                front_sign = 0
+            # beta 决定速度方向，yaw_rate 决定航向变化；
+            # 对 crab 模式，同向转角会产生近似零航向变化但允许斜向位移。
+            beta = math.atan2(
+                lr * math.tan(front_angle) + lf * math.tan(rear_angle),
+                wheelbase
+            )
+            yaw_rate = self.speed * (
+                math.tan(front_angle) - math.tan(rear_angle)
+            ) / wheelbase
 
-            if abs(rear_angle) > 1e-6:
-                rear_radius = self.wheelbase / math.tan(abs(rear_angle))
-                rear_sign = 1 if rear_angle > 0 else -1
-            else:
-                rear_radius = float('inf')
-                rear_sign = 0
+            self.heading = (self.heading + yaw_rate * dt) % (2 * math.pi)
+            travel_heading = self.heading + beta
+        else:
+            travel_heading = self.heading
 
-            # 计算瞬时旋转中心
-            if front_radius == float('inf') and rear_radius == float('inf'):
-                # 直线行驶
-                angular_velocity = 0
-            else:
-                # 计算等效转向角和转向半径
-                if rear_radius == float('inf'):
-                    # 只有前轮转向
-                    effective_radius = front_radius
-                    effective_sign = front_sign
-                elif front_radius == float('inf'):
-                    # 只有后轮转向
-                    effective_radius = rear_radius
-                    effective_sign = rear_sign
-                else:
-                    # 前后轮都转向
-                    # 计算等效转向半径 (简化模型)
-                    if front_sign == rear_sign:
-                        # 同向转向 (蟹行模式)
-                        effective_radius = (
-                            front_radius * rear_radius) / (front_radius + rear_radius)
-                    else:
-                        # 反向转向 (提高转弯半径)
-                        effective_radius = (
-                            front_radius * rear_radius) / abs(front_radius - rear_radius)
-                    effective_sign = front_sign
-
-                # 计算角速度
-                angular_velocity = (
-                    self.speed * effective_sign) / effective_radius
-
-            # 更新位置和朝向
-            self.heading += angular_velocity * dt
-            self.heading = self.heading % (2 * math.pi)  # 规范化到 [0, 2π]
-
-        # 根据当前朝向和速度更新位置
-        self.x += self.speed * math.cos(self.heading) * dt
-        self.y += self.speed * math.sin(self.heading) * dt
+        # 根据当前速度方向更新位置，负速度自然表示倒车
+        self.x += self.speed * math.cos(travel_heading) * dt
+        self.y += self.speed * math.sin(travel_heading) * dt
 
         # 记录轨迹
         self.trajectory.append((self.x, self.y))
+        self.v = self.speed
+        self.a = self.acceleration
+        self.steer_angle = self.front_steer_angle
+
+    def get_gear_label(self) -> str:
+        if abs(self.speed) < 0.05 and self.applied_brake > 0.2:
+            return "P"
+        return "R" if self.reverse else "D"
 
     def set_steering_mode(self, mode: str) -> None:
         """
@@ -450,6 +724,38 @@ class PathFollower:
         self.min_parking_speed = 1.0  # 最小泊车速度(m/s)
         self.max_parking_speed = 2.0  # 最大泊车速度(m/s)
         self.safe_distance = 0.5  # 安全距离(m)
+        self.goal_pose: Optional[Dict[str, Any]] = None
+        self.goal_slot_id: Optional[Union[str, int]] = None
+        self.goal_slot_type = "perpendicular"
+        self.auto_terminal_parking = True
+        self.terminal_trigger_distance = 3.2
+        self.terminal_path_tail = 6
+        self.position_tolerance = 0.25
+        self.heading_tolerance = math.radians(5.0)
+        self.stop_speed_tolerance = 0.05
+        self.hold_time = 0.35
+        self.max_terminal_time = 18.0
+        self.max_stagnation_time = 4.0
+        self.max_gear_switches = 2
+        self.minimum_clearance = 0.2
+        self.stage_offset = 1.15
+        self.align_heading_threshold = math.radians(12.0)
+        self.max_stage_speed = 1.0
+        self.max_dock_speed = 0.75
+        self.max_adjust_speed = 0.45
+        self.terminal_mode_active = False
+        self.terminal_phase = "idle"
+        self.terminal_status = "路径跟踪中"
+        self.terminal_failure_reason: Optional[str] = None
+        self.terminal_success = False
+        self.terminal_elapsed = 0.0
+        self.terminal_hold_elapsed = 0.0
+        self.terminal_clearance = float("inf")
+        self.terminal_errors: Dict[str, float] = {}
+        self._gear_switch_count = 0
+        self._last_reverse_command: Optional[bool] = None
+        self._last_progress_score: Optional[float] = None
+        self._stagnation_time = 0.0
 
         # PID控制参数
         self.pid_params = {
@@ -485,10 +791,311 @@ class PathFollower:
             'r_accel': 0.1  # 加速度输入权重
         }
 
+    def configure_terminal_parking(self, config: Optional[Dict[str, Any]] = None) -> None:
+        """配置终端泊车控制参数。"""
+        config = config or {}
+        self.auto_terminal_parking = bool(config.get("enabled", True))
+        self.terminal_trigger_distance = float(config.get("trigger_distance", 3.2))
+        self.position_tolerance = float(config.get("position_tolerance", 0.25))
+        self.heading_tolerance = math.radians(float(config.get("heading_tolerance_deg", 5.0)))
+        self.stop_speed_tolerance = float(config.get("stop_speed_tolerance", 0.05))
+        self.hold_time = float(config.get("hold_time", 0.35))
+        self.max_terminal_time = float(config.get("max_duration", 18.0))
+        self.max_stagnation_time = float(config.get("max_stagnation_time", 4.0))
+        self.max_gear_switches = int(config.get("max_gear_switches", 2))
+        self.minimum_clearance = float(config.get("minimum_clearance", 0.2))
+        self.stage_offset = float(config.get("staging_offset", 1.15))
+        self.align_heading_threshold = math.radians(float(config.get("align_heading_deg", 12.0)))
+        self.max_stage_speed = float(config.get("max_stage_speed", 1.0))
+        self.max_dock_speed = float(config.get("max_dock_speed", 0.75))
+        self.max_adjust_speed = float(config.get("max_adjust_speed", 0.45))
+        self.terminal_path_tail = max(2, int(config.get("path_tail_samples", 6)))
+
+    def _reset_terminal_state(self, keep_goal: bool = True) -> None:
+        self.terminal_mode_active = False
+        self.terminal_phase = "idle"
+        self.terminal_status = "路径跟踪中"
+        self.terminal_failure_reason = None
+        self.terminal_success = False
+        self.terminal_elapsed = 0.0
+        self.terminal_hold_elapsed = 0.0
+        self.terminal_clearance = float("inf")
+        self.terminal_errors = {}
+        self._gear_switch_count = 0
+        self._last_reverse_command = None
+        self._last_progress_score = None
+        self._stagnation_time = 0.0
+        if not keep_goal:
+            self.goal_pose = None
+            self.goal_slot_id = None
+            self.goal_slot_type = "perpendicular"
+
+    def clear_goal_pose(self) -> None:
+        self._reset_terminal_state(keep_goal=False)
+
+    def set_goal_pose(
+        self,
+        x: float,
+        y: float,
+        heading_deg: float,
+        slot_id: Optional[Union[str, int]] = None,
+        slot_type: str = "perpendicular",
+    ) -> None:
+        """设置终端泊车目标位姿。"""
+        self.goal_pose = {
+            "x": float(x),
+            "y": float(y),
+            "heading_deg": float(heading_deg),
+        }
+        self.goal_slot_id = slot_id
+        self.goal_slot_type = slot_type or "perpendicular"
+        self._reset_terminal_state(keep_goal=True)
+        self.terminal_status = "已锁定目标位姿"
+
+    @staticmethod
+    def _normalize_angle(angle: float) -> float:
+        while angle > math.pi:
+            angle -= 2 * math.pi
+        while angle < -math.pi:
+            angle += 2 * math.pi
+        return angle
+
+    def _goal_error_metrics(self, vehicle) -> Optional[Dict[str, float]]:
+        if not self.goal_pose:
+            return None
+
+        goal_heading = math.radians(self.goal_pose["heading_deg"])
+        goal_x = self.goal_pose["x"]
+        goal_y = self.goal_pose["y"]
+
+        rear_offset = vehicle.wheelbase / 2.0
+        vehicle_rear_x = vehicle.x - math.cos(vehicle.heading) * rear_offset
+        vehicle_rear_y = vehicle.y - math.sin(vehicle.heading) * rear_offset
+        goal_rear_x = goal_x - math.cos(goal_heading) * rear_offset
+        goal_rear_y = goal_y - math.sin(goal_heading) * rear_offset
+
+        center_dx = goal_x - vehicle.x
+        center_dy = goal_y - vehicle.y
+        rear_dx = goal_rear_x - vehicle_rear_x
+        rear_dy = goal_rear_y - vehicle_rear_y
+
+        longitudinal_error = rear_dx * math.cos(goal_heading) + rear_dy * math.sin(goal_heading)
+        lateral_error = -rear_dx * math.sin(goal_heading) + rear_dy * math.cos(goal_heading)
+        yaw_error = self._normalize_angle(goal_heading - vehicle.heading)
+
+        metrics = {
+            "goal_x": goal_x,
+            "goal_y": goal_y,
+            "goal_heading": goal_heading,
+            "goal_rear_x": goal_rear_x,
+            "goal_rear_y": goal_rear_y,
+            "rear_x": vehicle_rear_x,
+            "rear_y": vehicle_rear_y,
+            "center_dx": center_dx,
+            "center_dy": center_dy,
+            "center_distance": math.hypot(center_dx, center_dy),
+            "rear_distance": math.hypot(rear_dx, rear_dy),
+            "longitudinal_error": longitudinal_error,
+            "lateral_error": lateral_error,
+            "yaw_error": yaw_error,
+            "yaw_error_deg": math.degrees(yaw_error),
+        }
+        self.terminal_errors = metrics
+        return metrics
+
+    def _terminal_progress_score(self, metrics: Dict[str, float]) -> float:
+        return (
+            metrics["rear_distance"]
+            + 0.6 * abs(metrics["lateral_error"])
+            + 0.03 * abs(metrics["yaw_error_deg"])
+        )
+
+    def _update_terminal_progress(self, metrics: Dict[str, float], dt: float) -> None:
+        score = self._terminal_progress_score(metrics)
+        if self._last_progress_score is None or score < self._last_progress_score - 0.02:
+            self._last_progress_score = score
+            self._stagnation_time = 0.0
+            return
+        self._stagnation_time += dt
+        self._last_progress_score = min(self._last_progress_score, score)
+
+    def _set_reverse_command(self, reverse: bool) -> None:
+        if self._last_reverse_command is None:
+            self._last_reverse_command = reverse
+        elif reverse != self._last_reverse_command:
+            self._gear_switch_count += 1
+            self._last_reverse_command = reverse
+        self.reverse_gear = reverse
+
+    def update_terminal_clearance(self, clearance: float) -> None:
+        self.terminal_clearance = float(clearance)
+        if (
+            self.terminal_mode_active
+            and clearance < self.minimum_clearance
+            and not self.terminal_failure_reason
+        ):
+            self.terminal_failure_reason = "终端泊车安全间隙不足"
+            self.terminal_phase = "failed"
+            self.terminal_status = self.terminal_failure_reason
+
+    def _speed_command(self, vehicle, target_speed: float, reverse: bool) -> Tuple[float, float]:
+        direction_speed = -vehicle.speed if reverse else vehicle.speed
+        speed_error = target_speed - direction_speed
+        if target_speed <= self.stop_speed_tolerance:
+            return 0.0, 0.45 if abs(vehicle.speed) > self.stop_speed_tolerance else 0.18
+        if speed_error >= 0:
+            return min(0.65, 0.65 * speed_error + 0.08), 0.0
+        return 0.0, min(0.8, -0.85 * speed_error)
+
+    def _pursuit_to_point(
+        self,
+        vehicle,
+        target_point: Tuple[float, float],
+        target_speed: float,
+        reverse: bool = False,
+        yaw_correction: float = 0.0,
+    ) -> Tuple[float, float, float]:
+        dx = target_point[0] - vehicle.x
+        dy = target_point[1] - vehicle.y
+        dx_local = dx * math.cos(vehicle.heading) + dy * math.sin(vehicle.heading)
+        dy_local = -dx * math.sin(vehicle.heading) + dy * math.cos(vehicle.heading)
+        distance = math.hypot(dx_local, dy_local)
+        curvature = 0.0 if distance < 1e-6 else (2.0 * dy_local) / max(distance * distance, 0.8)
+        steer_angle = math.atan(vehicle.wheelbase * curvature)
+        steer = steer_angle / max(vehicle.max_steer, math.radians(8.0))
+        if reverse:
+            steer = -steer
+        steer += yaw_correction
+        steer = max(-1.0, min(1.0, steer))
+
+        self._set_reverse_command(reverse)
+        if hasattr(vehicle, 'reverse'):
+            vehicle.reverse = reverse
+
+        throttle, brake = self._speed_command(vehicle, target_speed, reverse)
+        if distance < 0.35:
+            throttle *= 0.55
+        return throttle, brake, steer
+
+    def _should_use_terminal_parking(self, vehicle) -> bool:
+        metrics = self._goal_error_metrics(vehicle)
+        if not metrics or not self.goal_pose or not self.auto_terminal_parking:
+            return False
+        near_end = self.current_target_idx >= max(len(self.path) - self.terminal_path_tail, 0)
+        return near_end or metrics["center_distance"] <= self.terminal_trigger_distance
+
+    def _terminal_parking_control(self, vehicle, dt: float) -> Tuple[float, float, float]:
+        metrics = self._goal_error_metrics(vehicle)
+        if not metrics:
+            self._reset_terminal_state(keep_goal=True)
+            if hasattr(vehicle, 'reverse'):
+                vehicle.reverse = False
+            return 0.0, 0.0, 0.0
+
+        self.terminal_mode_active = True
+        self.terminal_elapsed += dt
+
+        if self.terminal_failure_reason:
+            if hasattr(vehicle, 'reverse'):
+                vehicle.reverse = False
+            return 0.0, 0.85, 0.0
+
+        self._update_terminal_progress(metrics, dt)
+
+        if self.terminal_elapsed > self.max_terminal_time:
+            self.terminal_failure_reason = "终端泊车超时"
+        elif self._stagnation_time > self.max_stagnation_time and metrics["center_distance"] > self.position_tolerance * 1.5:
+            self.terminal_failure_reason = "终端泊车未继续收敛"
+        elif self._gear_switch_count > self.max_gear_switches:
+            self.terminal_failure_reason = "终端泊车换挡次数过多"
+
+        if self.terminal_failure_reason:
+            self.terminal_phase = "failed"
+            self.terminal_status = self.terminal_failure_reason
+            if hasattr(vehicle, 'reverse'):
+                vehicle.reverse = False
+            return 0.0, 0.85, 0.0
+
+        if (
+            metrics["center_distance"] <= self.position_tolerance
+            and abs(metrics["yaw_error"]) <= self.heading_tolerance
+        ):
+            self.terminal_phase = "hold"
+            self.terminal_hold_elapsed += dt
+            self.terminal_status = "终端泊车保持中"
+            self._set_reverse_command(False)
+            if hasattr(vehicle, 'reverse'):
+                vehicle.reverse = False
+            if (
+                self.terminal_hold_elapsed >= self.hold_time
+                and abs(vehicle.speed) <= self.stop_speed_tolerance
+            ):
+                self.terminal_success = True
+                self.terminal_status = "终端泊车完成"
+            return 0.0, 0.55 if abs(vehicle.speed) > self.stop_speed_tolerance else 0.25, 0.0
+
+        self.terminal_hold_elapsed = 0.0
+
+        stage_point = (
+            metrics["goal_x"] - math.cos(metrics["goal_heading"]) * self.stage_offset,
+            metrics["goal_y"] - math.sin(metrics["goal_heading"]) * self.stage_offset,
+        )
+        yaw_correction = max(
+            -0.45,
+            min(0.45, metrics["yaw_error"] / math.radians(28.0)),
+        )
+
+        if (
+            metrics["rear_distance"] > max(self.stage_offset * 0.9, 0.9)
+            or abs(metrics["yaw_error"]) > self.align_heading_threshold
+        ):
+            self.terminal_phase = "stage"
+            self.terminal_status = "终端泊车引导入位"
+            return self._pursuit_to_point(
+                vehicle,
+                stage_point,
+                self.max_stage_speed,
+                reverse=False,
+                yaw_correction=yaw_correction * 0.45,
+            )
+
+        reverse = metrics["longitudinal_error"] < -0.08
+        target_speed = self.max_adjust_speed if abs(metrics["longitudinal_error"]) < 0.45 else self.max_dock_speed
+        self.terminal_phase = "adjust" if target_speed == self.max_adjust_speed else "dock"
+        self.terminal_status = "终端泊车精调中" if self.terminal_phase == "adjust" else "终端泊车对位中"
+        return self._pursuit_to_point(
+            vehicle,
+            (metrics["goal_rear_x"], metrics["goal_rear_y"]),
+            target_speed,
+            reverse=reverse,
+            yaw_correction=yaw_correction * (-0.55 if reverse else 0.55),
+        )
+
+    def get_status_snapshot(self) -> Dict[str, Any]:
+        return {
+            "terminal_active": self.terminal_mode_active,
+            "phase": self.terminal_phase,
+            "status": self.terminal_status,
+            "failure_reason": self.terminal_failure_reason,
+            "success": self.terminal_success,
+            "gear": "R" if self.reverse_gear else "D",
+            "gear_switches": self._gear_switch_count,
+            "clearance": self.terminal_clearance,
+            "goal_slot_id": self.goal_slot_id,
+            "goal_slot_type": self.goal_slot_type,
+            "elapsed": self.terminal_elapsed,
+            "errors": dict(self.terminal_errors),
+        }
+
     def set_path(self, path):
         """设置跟踪路径"""
-        self.path = path
+        self.path = path or []
         self.current_target_idx = 0
+        self._reset_terminal_state(keep_goal=True)
+        self.steer_error_prev = 0.0
+        self.steer_error_sum = 0.0
+        self.speed_error_prev = 0.0
+        self.speed_error_sum = 0.0
 
     def set_control_method(self, method):
         """设置控制方法"""
@@ -498,21 +1105,36 @@ class PathFollower:
             print(f"不支持的控制方法: {method}，使用默认方法")
             self.control_method = 'default'
 
-    def get_control(self, vehicle):
+    def get_control(self, vehicle, dt: float):
         """获取控制输入"""
+        dt = max(float(dt), 0.0)
         if not self.path:
-            return 0.0, 0.0, 0.0  # 无路径时不动作
+            self._reset_terminal_state(keep_goal=True)
+            self.terminal_status = "等待路径"
+            return 0.0, 0.0, 0.0
 
         if self.control_method == 'parking':
+            self.terminal_mode_active = False
             return self._parking_control(vehicle)
-        elif self.control_method == 'pid':
+
+        if self._should_use_terminal_parking(vehicle):
+            return self._terminal_parking_control(vehicle, dt)
+
+        if self.terminal_mode_active:
+            self._reset_terminal_state(keep_goal=True)
+            self.terminal_status = "路径跟踪中"
+
+        if hasattr(vehicle, 'reverse'):
+            vehicle.reverse = False
+
+        if self.control_method == 'pid':
             return self._pid_control(vehicle)
-        elif self.control_method == 'mpc':
+        if self.control_method == 'mpc':
             return self._mpc_control(vehicle)
-        elif self.control_method == 'lqr':
+        if self.control_method == 'lqr':
             return self._lqr_control(vehicle)
-        else:
-            return self._default_control(vehicle)
+
+        return self._default_control(vehicle)
 
     def _default_control(self, vehicle):
         """默认控制方法"""
@@ -825,6 +1447,8 @@ class PathFollower:
     def _parking_control(self, vehicle):
         """泊车专用控制方法"""
         if not self.path or not self.parking_type:
+            if hasattr(vehicle, 'reverse'):
+                vehicle.reverse = False
             return 0.0, 0.0, 0.0
 
         # 获取目标点
@@ -896,6 +1520,8 @@ class PathFollower:
             if distance < 1.0:  # 到达泊车起始点
                 self.parking_phase = 'reverse'
                 self.reverse_gear = True
+                if hasattr(vehicle, 'reverse'):
+                    vehicle.reverse = False
                 return 0.0, 0.3, 0.0  # 轻踩刹车准备倒车
 
             # 横向控制 - 使用PID控制器
@@ -940,6 +1566,8 @@ class PathFollower:
             if abs(steer) > 0.5:
                 throttle *= 0.5
 
+            if hasattr(vehicle, 'reverse'):
+                vehicle.reverse = False
             return throttle, brake, steer
 
         elif self.parking_phase == 'reverse':
@@ -973,6 +1601,8 @@ class PathFollower:
             if distance < 1.0:
                 self.parking_phase = 'adjust'
                 self.reverse_gear = False
+                if hasattr(vehicle, 'reverse'):
+                    vehicle.reverse = True
                 return 0.0, 0.3, 0.0
 
             # 纵向控制 - 使用LQR控制器
@@ -1002,11 +1632,15 @@ class PathFollower:
             if abs(steer) > 0.5:
                 throttle *= 0.7
 
+            if hasattr(vehicle, 'reverse'):
+                vehicle.reverse = self.reverse_gear
             return throttle, brake, steer
 
         else:  # adjust phase
             # 微调阶段：精确调整到目标位置
             if distance < self.safe_distance:
+                if hasattr(vehicle, 'reverse'):
+                    vehicle.reverse = False
                 return 0.0, 0.3, 0.0  # 停车
 
             # 横向控制 - 使用PID控制器
@@ -1067,6 +1701,8 @@ class PathFollower:
                     throttle = 0.0
                     brake = min(0.2, -accel_cmd)
 
+            if hasattr(vehicle, 'reverse'):
+                vehicle.reverse = self.reverse_gear
             return throttle, brake, steer
 
     def _find_target_point(self, vehicle):
@@ -1195,6 +1831,10 @@ class ParkingEnvironment(Environment):
         safety_obstacle.is_parking_spot = is_parking_spot
         safety_obstacle.occupied = occupied
 
+        # 建立停车位与安全边界的引用关系，便于交互式编辑场景
+        obstacle.safety_obstacle = safety_obstacle
+        safety_obstacle.linked_obstacle = obstacle
+
         # 先添加安全边界
         self.obstacles.append(safety_obstacle)
 
@@ -1207,7 +1847,7 @@ class ParkingEnvironment(Environment):
         self.dynamic_obstacles.append(
             DynamicObstacle(x0, y0, vx, vy, width, height))
 
-    def find_parking_spot(self, point):
+    def find_parking_spot(self, point, include_occupied: bool = False):
         """
         查找点所在的未占用停车位
 
@@ -1219,7 +1859,9 @@ class ParkingEnvironment(Environment):
         """
         for i in range(0, len(self.obstacles), 2):
             obstacle = self.obstacles[i + 1]  # 实际障碍物（非安全边界）
-            if hasattr(obstacle, 'is_parking_spot') and obstacle.is_parking_spot and not obstacle.occupied:
+            if hasattr(obstacle, 'is_parking_spot') and obstacle.is_parking_spot:
+                if obstacle.occupied and not include_occupied:
+                    continue
                 # 检查点是否在这个未占用的停车位内
                 if obstacle.type == "rectangle":
                     # 将点转换到矩形的局部坐标系
@@ -1319,8 +1961,16 @@ class ParkingEnvironment(Environment):
             dy = end[1] - start[1]
             path_length = math.sqrt(dx * dx + dy * dy)
 
-            if path_length < 1e-6:  # 避免除以零
-                return False
+            if path_length < 1e-6:
+                temp_vehicle = VehicleModel(
+                    start[0],
+                    start[1],
+                    0.0,
+                    vehicle_length,
+                    vehicle_width,
+                )
+                collision_info = check_vehicle_collision(temp_vehicle, self)
+                return collision_info['collision']
 
             # 计算采样点数量（根据路径长度动态调整）
             steps = max(3, int(path_length / (vehicle_width / 2)))
@@ -1407,7 +2057,8 @@ def check_vehicle_collision(vehicle, env):
         'position': None,
         'obstacle': None,
         'distance': float('inf'),
-        'safety_warning': False
+        'safety_warning': False,
+        'clearance': float('inf'),
     }
 
     # 获取车辆四个角的坐标
@@ -1471,7 +2122,14 @@ def check_vehicle_collision(vehicle, env):
                 collision_info['obstacle'] = obstacle
                 collision_info['distance'] = np.hypot(
                     vehicle.x - obstacle.x, vehicle.y - obstacle.y)
+                collision_info['clearance'] = 0.0
                 return collision_info  # 发生实际碰撞立即返回
+
+            if obstacle_polygon is not None:
+                collision_info['clearance'] = min(
+                    collision_info['clearance'],
+                    float(vehicle_polygon.distance(obstacle_polygon)),
+                )
 
         # 检查安全边界（如果没有发生实际碰撞）
         if hasattr(safety_obstacle, 'type') and safety_obstacle.type == 'circle':
@@ -1486,6 +2144,12 @@ def check_vehicle_collision(vehicle, env):
                     collision_info['obstacle'] = safety_obstacle
                     collision_info['distance'] = np.hypot(
                         vehicle.x - safety_obstacle.x, vehicle.y - safety_obstacle.y)
+                    collision_info['clearance'] = min(collision_info['clearance'], 0.0)
+            else:
+                collision_info['clearance'] = min(
+                    collision_info['clearance'],
+                    float(vehicle_polygon.distance(safety_circle)),
+                )
 
     return collision_info
 
@@ -1624,6 +2288,47 @@ def check_segment_collision(start: Tuple[float, float],
 class PygameSimulator:
     """基于Pygame的车辆仿真器"""
 
+    @staticmethod
+    def configure_rendering_environment() -> None:
+        """优先启用更稳妥的 SDL 软件渲染配置。"""
+        os.environ.setdefault('SDL_RENDER_DRIVER', 'software')
+        os.environ.setdefault('LIBGL_ALWAYS_SOFTWARE', '1')
+        os.environ.setdefault('SDL_VIDEO_X11_FORCE_EGL', '0')
+
+    @staticmethod
+    def configure_text_output(log_path: Optional[str] = None) -> Optional[str]:
+        """尽量统一控制台输出为 UTF-8。"""
+        platform_is_windows = platform.system().lower().startswith("win")
+        has_console = False
+        for stream in (sys.stdout, sys.stderr):
+            if stream is None:
+                continue
+            isatty = getattr(stream, "isatty", None)
+            if callable(isatty):
+                try:
+                    has_console = has_console or bool(isatty())
+                except Exception:
+                    pass
+            reconfigure = getattr(stream, "reconfigure", None)
+            if callable(reconfigure):
+                try:
+                    reconfigure(encoding="utf-8", errors="replace")
+                except Exception:
+                    continue
+        if platform_is_windows and not has_console:
+            log_path = log_path or _DEFAULT_LOG_FILE
+            os.makedirs(os.path.dirname(log_path), exist_ok=True)
+            try:
+                log_handle = open(log_path, "a", encoding="utf-8", buffering=1)
+            except OSError:
+                return None
+            if getattr(sys, "stdout", None) is None:
+                sys.stdout = log_handle
+            if getattr(sys, "stderr", None) is None:
+                sys.stderr = log_handle
+            return log_path
+        return None
+
     def __init__(self, config_input: Optional[Union[str, Dict]] = None):
         """
         初始化仿真器
@@ -1631,12 +2336,17 @@ class PygameSimulator:
         参数:
             config_input: 配置文件路径(str)或配置字典(Dict)
         """
+        self.log_path = self.configure_text_output()
         # 加载配置
         self.config = self._load_config(config_input)
+        configure_font_preferences(self.config.get('ui', {}).get('fonts', {}))
+        self.configure_rendering_environment()
 
         # 初始化pygame
         if not pygame.get_init():
             pygame.init()
+        if not pygame.display.get_init():
+            pygame.display.init()
 
         # 设置窗口尺寸和比例
         self.scale = self.config.get('scale', 5)  # 像素/米
@@ -1644,7 +2354,15 @@ class PygameSimulator:
         self.height = self.config.get('window_height', 800)
 
         # 创建窗口
-        self.screen = pygame.display.set_mode((self.width, self.height))
+        try:
+            self.screen = pygame.display.set_mode(
+                (self.width, self.height),
+                pygame.SWSURFACE,
+            )
+        except pygame.error as exc:
+            raise RuntimeError(
+                f"无法创建Pygame窗口（已尝试 SDL 软件渲染兼容模式）: {exc}"
+            ) from exc
         pygame.display.set_caption(self.config.get(
             'window_title', 'RRT-Pygame 仿真器'))
 
@@ -1658,16 +2376,13 @@ class PygameSimulator:
         self.environment = None
         self.vehicle = VehicleModel(length=vehicle_config.get(
             'length', 4.5), width=vehicle_config.get('width', 1.8))
-        # 更新车辆参数
-        self.vehicle.wheel_base = vehicle_config.get('wheel_base', 2.7)
-        self.vehicle.max_speed = vehicle_config.get('max_speed', 5.0)
-        self.vehicle.max_accel = vehicle_config.get('max_accel', 2.0)
-        self.vehicle.max_decel = vehicle_config.get('max_decel', 4.0)
-        self.vehicle.max_steer_angle = vehicle_config.get(
-            'max_steer_angle', 0.7854)
+        self._apply_vehicle_config(vehicle_config)
 
         self.follower = PathFollower(lookahead=self.config.get('lookahead', 5.0),
                                      control_method=self.config.get('control_method', 'default'))
+        self.follower.configure_terminal_parking(
+            self.config.get('parking', {}).get('final_pose', {})
+        )
 
         # 仿真状态
         self.running = False
@@ -1703,6 +2418,43 @@ class PygameSimulator:
         self.hint_color = (50, 50, 50)  # 深灰色
         self.hint_font_size = 20
 
+    def _apply_vehicle_config(self, vehicle_config: Dict[str, Any]) -> None:
+        dynamics = vehicle_config.get('dynamics', {})
+        render = vehicle_config.get('render', {})
+        wheelbase = vehicle_config.get(
+            'wheelbase', vehicle_config.get('wheel_base', 2.7))
+        max_brake = dynamics.get(
+            'max_brake',
+            vehicle_config.get('max_brake', vehicle_config.get('max_decel', 4.0)),
+        )
+        max_steer = dynamics.get(
+            'max_steer',
+            vehicle_config.get('max_steer', vehicle_config.get('max_steer_angle', 0.7854)),
+        )
+
+        self.vehicle.wheelbase = wheelbase
+        self.vehicle.wheel_base = wheelbase
+        self.vehicle.max_speed = dynamics.get('max_speed', vehicle_config.get('max_speed', 5.0))
+        self.vehicle.max_reverse_speed = dynamics.get('max_reverse_speed', vehicle_config.get('max_reverse_speed', 2.5))
+        self.vehicle.max_accel = dynamics.get('max_accel', vehicle_config.get('max_accel', 2.0))
+        self.vehicle.max_brake = max_brake
+        self.vehicle.max_decel = max_brake
+        self.vehicle.max_steer = max_steer
+        self.vehicle.max_steer_angle = max_steer
+        self.vehicle.steer_response = dynamics.get('steer_rate', dynamics.get('steer_response', self.vehicle.steer_response))
+        self.vehicle.rolling_resistance = dynamics.get('rolling_resistance', self.vehicle.rolling_resistance)
+        self.vehicle.drag_coefficient = dynamics.get('drag_coefficient', self.vehicle.drag_coefficient)
+        self.vehicle.creep_speed = dynamics.get('creep_speed', self.vehicle.creep_speed)
+        self.vehicle.creep_accel = dynamics.get('creep_accel', self.vehicle.creep_accel)
+        self.vehicle.jerk_limit = dynamics.get('jerk_limit', self.vehicle.jerk_limit)
+        self.vehicle.throttle_response = dynamics.get('throttle_response', self.vehicle.throttle_response)
+        self.vehicle.brake_response = dynamics.get('brake_response', self.vehicle.brake_response)
+        self.vehicle.steer_speed_sensitivity = dynamics.get(
+            'steer_speed_sensitivity',
+            self.vehicle.steer_speed_sensitivity,
+        )
+        self.vehicle.render_style = render
+
     def _load_config(self, config_input: Optional[Union[str, Dict]]) -> Dict:
         """加载配置文件或配置字典"""
         default_config = {
@@ -1714,14 +2466,62 @@ class PygameSimulator:
             'dt': 0.05,  # 仿真时间步长(秒)
             'lookahead': 5.0,  # 路径跟踪前瞻距离
             'control_method': 'default',  # 控制方法: default, pid, mpc, lqr, parking
+            'ui': {
+                'fonts': {},
+            },
+            'parking': {
+                'final_pose': {
+                    'enabled': True,
+                    'trigger_distance': 3.2,
+                    'position_tolerance': 0.25,
+                    'heading_tolerance_deg': 5.0,
+                    'stop_speed_tolerance': 0.05,
+                    'max_duration': 18.0,
+                    'minimum_clearance': 0.2,
+                },
+            },
             'vehicle': {
                 'length': 4.5,
                 'width': 1.8,
+                'wheelbase': 2.7,
                 'wheel_base': 2.7,
                 'max_speed': 20.0,
                 'max_accel': 2.0,
+                'max_brake': 4.0,
                 'max_decel': 4.0,
-                'max_steer_angle': 0.7854  # π/4
+                'max_steer': 0.7854,
+                'max_steer_angle': 0.7854,  # π/4
+                'dynamics': {
+                    'max_speed': 20.0,
+                    'max_reverse_speed': 2.5,
+                    'max_accel': 2.0,
+                    'max_brake': 4.0,
+                    'max_steer': 0.7854,
+                    'steer_rate': math.pi,
+                    'rolling_resistance': 0.2,
+                    'drag_coefficient': 0.015,
+                    'creep_speed': 0.35,
+                    'creep_accel': 0.45,
+                    'jerk_limit': 6.0,
+                    'throttle_response': 2.4,
+                    'brake_response': 4.0,
+                    'steer_speed_sensitivity': 0.08,
+                },
+                'render': {
+                    'body_color': [46, 160, 109, 255],
+                    'roof_color': [73, 178, 128, 245],
+                    'window_color': [200, 225, 234, 220],
+                    'window_shadow': [93, 121, 138, 185],
+                    'trim_color': [25, 34, 42, 255],
+                    'wheel_color': [32, 35, 38, 255],
+                    'wheel_hub_color': [184, 191, 198, 255],
+                    'shadow_color': [18, 22, 24, 70],
+                    'headlight_color': [255, 244, 196, 230],
+                    'taillight_color': [220, 63, 52, 230],
+                    'brake_color': [255, 76, 76, 255],
+                    'reverse_color': [146, 228, 255, 255],
+                    'outline_color': [15, 26, 31, 255],
+                },
             }
         }
 
@@ -1768,52 +2568,95 @@ class PygameSimulator:
         """
         绘制车辆
         """
-        # 获取车辆四个角的坐标
-        corners = vehicle.get_corners()
+        render_style = getattr(vehicle, "render_style", None) or self.config.get("vehicle", {}).get("render", {})
 
-        # 转换到屏幕坐标
-        screen_corners = []
-        for x, y in corners:
-            sx = x * scale + offset_x
-            sy = y * scale + offset_y
-            screen_corners.append((int(sx), int(sy)))
+        def rgb(name: str, fallback: Tuple[int, int, int]) -> Tuple[int, int, int]:
+            value = render_style.get(name)
+            if isinstance(value, (list, tuple)) and len(value) >= 3:
+                return tuple(int(component) for component in value[:3])
+            return fallback
 
-        # 设置车身颜色
-        if color is None:
-            car_color = (0, 128, 0)  # 默认绿色
-        else:
-            car_color = color
+        def rgba(name: str, fallback: Tuple[int, int, int, int]) -> Tuple[int, int, int, int]:
+            value = render_style.get(name)
+            if isinstance(value, (list, tuple)) and len(value) >= 4:
+                return tuple(int(component) for component in value[:4])
+            if isinstance(value, (list, tuple)) and len(value) == 3:
+                return tuple(int(component) for component in value[:3]) + (fallback[3],)
+            return fallback
 
-        # 绘制车身
-        pygame.draw.polygon(screen, car_color, screen_corners)
+        def local_to_screen(local_x: float, local_y: float) -> Tuple[int, int]:
+            world_x = vehicle.x + local_x * cos_h - local_y * sin_h
+            world_y = vehicle.y + local_x * sin_h + local_y * cos_h
+            return (
+                int(round(world_x * scale + offset_x)),
+                int(round(world_y * scale + offset_y)),
+            )
 
-        # 绘制车窗 (内部区域)
-        window_inset = 0.2  # 车窗内缩比例
-        half_length = vehicle.length / 2 * (1 - window_inset)
-        half_width = vehicle.width / 2 * (1 - window_inset)
-
-        # 车窗在车身坐标系中的位置
-        window_local = [
-            (half_length, half_width),  # 右前
-            (half_length, -half_width),  # 左前
-            (-half_length, -half_width),  # 左后
-            (-half_length, half_width)  # 右后
-        ]
-
-        # 转换到世界坐标系，再转换到屏幕坐标系
         cos_h = math.cos(vehicle.heading)
         sin_h = math.sin(vehicle.heading)
+        body_corners = [
+            (
+                int(round(world_x * scale + offset_x)),
+                int(round(world_y * scale + offset_y)),
+            )
+            for world_x, world_y in vehicle.get_corners()
+        ]
 
-        window_screen = []
-        for lx, ly in window_local:
-            wx = vehicle.x + lx * cos_h - ly * sin_h
-            wy = vehicle.y + lx * sin_h + ly * cos_h
-            sx = wx * scale + offset_x
-            sy = wy * scale + offset_y
-            window_screen.append((int(sx), int(sy)))
+        body_color = tuple(int(component) for component in color[:3]) if color is not None else rgb("body_color", (46, 160, 109))
+        roof_color = rgb("roof_color", (73, 178, 128))
+        window_color = rgb("window_color", (200, 225, 234))
+        window_shadow = rgb("window_shadow", (93, 121, 138))
+        outline_color = rgb("outline_color", (15, 26, 31))
+        trim_color = rgb("trim_color", (25, 34, 42))
+        wheel_color = rgb("wheel_color", (32, 35, 38))
+        wheel_hub_color = rgb("wheel_hub_color", (184, 191, 198))
+        headlight_color = rgb("headlight_color", (255, 244, 196))
+        taillight_color = rgb("taillight_color", (220, 63, 52))
+        brake_color = rgb("brake_color", (255, 76, 76))
+        reverse_color = rgb("reverse_color", (146, 228, 255))
+        shadow_color = rgba("shadow_color", (18, 22, 24, 70))
 
-        # 绘制车窗 (深蓝色半透明)
-        pygame.draw.polygon(screen, (30, 30, 80, 180), window_screen)
+        shadow_surface = pygame.Surface(screen.get_size(), pygame.SRCALPHA)
+        shadow_offset_x = max(3, int(round(scale * 0.18)))
+        shadow_offset_y = max(5, int(round(scale * 0.28)))
+        shadow_points = [(x + shadow_offset_x, y + shadow_offset_y) for x, y in body_corners]
+        pygame.draw.polygon(shadow_surface, shadow_color, shadow_points)
+        screen.blit(shadow_surface, (0, 0))
+
+        pygame.draw.polygon(screen, body_color, body_corners)
+        pygame.draw.polygon(screen, outline_color, body_corners, max(2, int(round(scale * 0.04))))
+
+        roof_local = [
+            (vehicle.length * 0.22, vehicle.width * 0.34),
+            (vehicle.length * 0.30, -vehicle.width * 0.34),
+            (-vehicle.length * 0.02, -vehicle.width * 0.30),
+            (-vehicle.length * 0.12, vehicle.width * 0.30),
+        ]
+        roof_screen = [local_to_screen(lx, ly) for lx, ly in roof_local]
+        pygame.draw.polygon(screen, roof_color, roof_screen)
+        pygame.draw.polygon(screen, outline_color, roof_screen, 2)
+
+        windshield_local = [
+            (vehicle.length * 0.31, vehicle.width * 0.26),
+            (vehicle.length * 0.34, -vehicle.width * 0.26),
+            (vehicle.length * 0.18, -vehicle.width * 0.28),
+            (vehicle.length * 0.14, vehicle.width * 0.28),
+        ]
+        rear_glass_local = [
+            (-vehicle.length * 0.01, vehicle.width * 0.28),
+            (vehicle.length * 0.08, -vehicle.width * 0.28),
+            (-vehicle.length * 0.10, -vehicle.width * 0.26),
+            (-vehicle.length * 0.18, vehicle.width * 0.26),
+        ]
+        pygame.draw.polygon(screen, window_shadow, [local_to_screen(lx, ly) for lx, ly in windshield_local])
+        pygame.draw.polygon(screen, window_color, [local_to_screen(lx, ly) for lx, ly in rear_glass_local])
+        pygame.draw.line(
+            screen,
+            trim_color,
+            local_to_screen(vehicle.length * 0.11, vehicle.width * 0.30),
+            local_to_screen(vehicle.length * 0.03, -vehicle.width * 0.30),
+            2,
+        )
 
         # 获取车轮位置和角度
         wheels = vehicle.get_wheel_positions()
@@ -1844,22 +2687,12 @@ class PygameSimulator:
                 sy = wy * scale + offset_y
                 wheel_corners_screen.append((int(sx), int(sy)))
 
-            # 绘制车轮 (黑色)
-            pygame.draw.polygon(screen, (20, 20, 20), wheel_corners_screen)
+            pygame.draw.polygon(screen, wheel_color, wheel_corners_screen)
+            pygame.draw.polygon(screen, outline_color, wheel_corners_screen, 1)
 
-            # 绘制车轮中心点 (轮毂)
             hub_x = int(wheel_x * scale + offset_x)
             hub_y = int(wheel_y * scale + offset_y)
-            pygame.draw.circle(screen, (150, 150, 150), (hub_x, hub_y), 2)
-
-        # 绘制车头方向
-        head_x = vehicle.x + math.cos(vehicle.heading) * vehicle.length / 2
-        head_y = vehicle.y + math.sin(vehicle.heading) * vehicle.length / 2
-        center_screen = (int(vehicle.x * scale + offset_x),
-                         int(vehicle.y * scale + offset_y))
-        head_screen = (int(head_x * scale + offset_x),
-                       int(head_y * scale + offset_y))
-        pygame.draw.line(screen, (0, 0, 255), center_screen, head_screen, 2)
+            pygame.draw.circle(screen, wheel_hub_color, (hub_x, hub_y), max(2, int(round(scale * 0.06))))
 
         # 绘制车灯
         light_radius = vehicle.width * 0.1
@@ -1876,7 +2709,7 @@ class PygameSimulator:
             wy = vehicle.y + lx * sin_h + ly * cos_h
             sx = int(wx * scale + offset_x)
             sy = int(wy * scale + offset_y)
-            pygame.draw.circle(screen, (255, 255, 0),
+            pygame.draw.circle(screen, headlight_color,
                                (sx, sy), int(light_radius * scale))
 
         # 后灯位置 (红色)
@@ -1890,8 +2723,28 @@ class PygameSimulator:
             wy = vehicle.y + lx * sin_h + ly * cos_h
             sx = int(wx * scale + offset_x)
             sy = int(wy * scale + offset_y)
-            pygame.draw.circle(screen, (255, 0, 0), (sx, sy),
-                               int(light_radius * scale))
+            pygame.draw.circle(
+                screen,
+                brake_color if getattr(vehicle, "last_brake", 0.0) > 0.1 else taillight_color,
+                (sx, sy),
+                int(light_radius * scale),
+            )
+            if getattr(vehicle, "reverse", False):
+                pygame.draw.circle(screen, reverse_color, (sx, sy), max(2, int(light_radius * scale * 0.55)))
+
+        gear_label = vehicle.get_gear_label() if hasattr(vehicle, "get_gear_label") else ("R" if getattr(vehicle, "reverse", False) else "D")
+        gear_color = {
+            "D": (73, 190, 122),
+            "R": (92, 184, 255),
+            "P": (255, 188, 79),
+        }.get(gear_label, (73, 190, 122))
+        center_screen = (int(vehicle.x * scale + offset_x), int(vehicle.y * scale + offset_y))
+        pygame.draw.circle(screen, gear_color, center_screen, max(4, int(round(scale * 0.09))))
+        pygame.draw.circle(screen, outline_color, center_screen, max(4, int(round(scale * 0.09))), 1)
+        gear_font = get_font(max(12, int(round(scale * 0.22))), role="mono")
+        gear_surface = gear_font.render(gear_label, True, WHITE)
+        gear_rect = gear_surface.get_rect(center=center_screen)
+        screen.blit(gear_surface, gear_rect)
 
         # 仅当show_sensors为True时绘制传感器
         if hasattr(vehicle, 'show_sensors') and vehicle.show_sensors:
@@ -2043,7 +2896,7 @@ class PygameSimulator:
 
     def _draw_info(self) -> None:
         """绘制信息"""
-        font = get_font(18)
+        font = get_font(18, role="ui")
 
         # 绘制控制方法信息
         control_text = f"控制方法: {self.current_control_method}"
@@ -2281,7 +3134,9 @@ class PygameSimulator:
                     else:
                         # 计算控制输入
                         throttle, brake, steer = self.follower.get_control(
-                            self.vehicle)
+                            self.vehicle,
+                            dt,
+                        )
 
                         # 更新车辆状态
                         self.vehicle.update(throttle, brake, steer, dt)
@@ -2402,7 +3257,7 @@ class PygameSimulator:
     def _draw_status_text(self):
         """绘制状态文本"""
         try:
-            font = get_font(24)
+            font = get_font(24, role="ui")
             if font and self.status_text:
                 text_surface = font.render(
                     self.status_text, True, self.status_color)
@@ -2445,6 +3300,11 @@ class PygameSimulator:
 
     def _reset_simulation(self):
         """重置仿真"""
+        if hasattr(self, '_cancel_planning_task'):
+            try:
+                self._cancel_planning_task(reason="基础重置触发，取消规划任务")
+            except Exception:
+                pass
         if hasattr(self, '_reset_vehicle'):
             self._reset_vehicle()
         self.paused = False
@@ -2471,7 +3331,7 @@ class PygameSimulator:
     def _draw_hints(self):
         """绘制按键提示信息"""
         try:
-            font = get_font(self.hint_font_size)
+            font = get_font(self.hint_font_size, role="ui")
             if not font:
                 return
 

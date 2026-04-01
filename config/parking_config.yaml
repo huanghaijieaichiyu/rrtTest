@@ -14,16 +14,96 @@ simulation:
   lookahead: 5.0  # 路径跟踪前瞻距离
   speed_multiplier: 2.0  # 仿真速度倍率
 
+ui:
+  fonts:
+    ui:
+      system:
+        - "Noto Sans CJK SC"
+        - "WenQuanYi Micro Hei"
+        - "Source Han Sans SC"
+        - "Droid Sans Fallback"
+        - "Microsoft YaHei UI"
+        - "Microsoft YaHei"
+        - "SimHei"
+        - "DengXian"
+        - "SimSun"
+      files:
+        - "NotoSansCJKsc-Regular.otf"
+    title:
+      system:
+        - "Noto Sans CJK SC"
+        - "Source Han Sans SC"
+        - "WenQuanYi Micro Hei"
+        - "Microsoft YaHei UI"
+        - "Microsoft YaHei"
+        - "DengXian"
+      files:
+        - "STKAITI.TTF"
+        - "NotoSansCJKsc-Regular.otf"
+    mono:
+      system:
+        - "Sarasa Mono SC"
+        - "WenQuanYi Zen Hei Mono"
+        - "Noto Sans Mono CJK SC"
+        - "Noto Sans CJK SC"
+        - "Microsoft YaHei UI"
+        - "Consolas"
+      files:
+        - "NotoSansCJKsc-Regular.otf"
+
 # 车辆参数
 vehicle:
   length: 4.5     # 车辆长度(米)
   width: 1.8      # 车辆宽度(米)
   wheelbase: 2.7  # 轴距(米)
   dynamics:
-    max_speed: 10.0  # 最大速度(m/s)
-    max_accel: 2.0   # 最大加速度(m/s^2)
-    max_brake: 4.0   # 最大制动(m/s^2)
-    max_steer_angle: 0.7854  # 最大转向角(弧度)
+    max_speed: 6.0  # 最大前进速度(m/s)
+    max_reverse_speed: 1.8  # 最大倒车速度(m/s)
+    max_accel: 1.8   # 最大加速度(m/s^2)
+    max_brake: 4.2   # 最大制动(m/s^2)
+    max_steer: 0.7854  # 最大转向角(弧度)
+    steer_rate: 1.95  # 转向建立速度(rad/s)
+    rolling_resistance: 0.24
+    drag_coefficient: 0.018
+    creep_speed: 0.30
+    creep_accel: 0.38
+    jerk_limit: 4.5
+    throttle_response: 1.8
+    brake_response: 3.2
+    steer_speed_sensitivity: 0.12
+  render:
+    body_color: [37, 121, 96, 255]
+    roof_color: [61, 154, 123, 245]
+    window_color: [194, 220, 233, 220]
+    window_shadow: [87, 113, 128, 185]
+    trim_color: [25, 34, 42, 255]
+    wheel_color: [31, 34, 38, 255]
+    wheel_hub_color: [186, 194, 201, 255]
+    shadow_color: [18, 22, 24, 78]
+    headlight_color: [255, 244, 196, 230]
+    taillight_color: [220, 63, 52, 230]
+    brake_color: [255, 76, 76, 255]
+    reverse_color: [146, 228, 255, 255]
+    outline_color: [15, 26, 31, 255]
+
+parking:
+  final_pose:
+    enabled: true
+    trigger_distance: 3.2
+    position_tolerance: 0.25
+    heading_tolerance_deg: 5.0
+    stop_speed_tolerance: 0.05
+    hold_time: 0.35
+    max_duration: 18.0
+    max_stagnation_time: 4.0
+    max_gear_switches: 2
+    minimum_clearance: 0.2
+    staging_offset: 1.15
+    align_heading_deg: 12.0
+    max_stage_speed: 1.0
+    max_dock_speed: 0.75
+    max_adjust_speed: 0.45
+    path_tail_samples: 6
 
 # 停车场布局
 parking_lot:
@@ -174,10 +254,18 @@ parking_lot:
     parking_spot_border: [150, 150, 150, 200]  # 停车位边框颜色
     parking_spot_line: [255, 255, 255, 200]  # 停车位线颜色
     no_parking: [200, 200, 200, 150]  # 禁止停车区域颜色
-    car_body: [50, 50, 50, 230]  # 车身颜色 - 深灰色
-    car_window: [150, 150, 150, 180]  # 车窗颜色 - 浅灰色
-    car_highlight: [200, 200, 200, 200]  # 车辆高光颜色
+    car_body: [50, 50, 50, 230]  # 被占车位填充色
     safety_zone: [255, 165, 0, 100]  # 安全区域颜色 - 橙色半透明
+    target_spot_glow: [76, 161, 255, 70]
+    target_spot_border: [76, 161, 255, 255]
+    target_pose: [255, 214, 102, 220]
+    panel_bg: [250, 248, 243, 235]
+    panel_border: [210, 204, 194, 255]
+    panel_title: [18, 27, 34, 255]
+    text_muted: [88, 96, 103, 255]
+    success: [46, 160, 109, 255]
+    warning: [214, 146, 52, 255]
+    danger: [194, 76, 76, 255]
 
 # 路径规划
 path_planning:

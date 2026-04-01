@@ -60,7 +60,11 @@ class PathSmoother:
 
         # 计算曲率（角度变化/路径长度）
         segment_lengths = np.sqrt(np.sum(vectors**2, axis=1))
-        curvatures = np.abs(angle_changes) / segment_lengths[1:]
+        valid_lengths = np.maximum(segment_lengths[1:], 1e-6)
+        curvatures = np.abs(angle_changes) / valid_lengths
+        curvatures = curvatures[np.isfinite(curvatures)]
+        if curvatures.size == 0:
+            return path
 
         # 设置曲率阈值（可根据实际情况调整）
         curvature_threshold = np.mean(curvatures) + 2 * np.std(curvatures)

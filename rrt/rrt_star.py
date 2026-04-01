@@ -52,9 +52,15 @@ class RRTStar(RRT):
             vehicle_length: 车辆长度(米)
         """
         super().__init__(
-            start, goal, env, step_size,
-            max_iterations, goal_sample_rate, search_radius,
-            vehicle_width, vehicle_length
+            start=start,
+            goal=goal,
+            env=env,
+            step_size=step_size,
+            max_iterations=max_iterations,
+            goal_sample_rate=goal_sample_rate,
+            search_radius=search_radius,
+            vehicle_width=vehicle_width,
+            vehicle_length=vehicle_length,
         )
         self.rewire_factor = rewire_factor
 
@@ -69,7 +75,11 @@ class RRTStar(RRT):
             附近节点列表
         """
         n = len(self.node_list)
-        r = self.step_size * self.rewire_factor * np.sqrt(np.log(n) / n)
+        if n <= 1:
+            r = self.step_size
+        else:
+            r = self.step_size * self.rewire_factor * np.sqrt(np.log(n) / n)
+            r = max(r, self.step_size)
         r = min(r, self.search_radius)  # 限制搜索半径
 
         dist_list = [
@@ -77,7 +87,27 @@ class RRTStar(RRT):
             for n in self.node_list
         ]
         near_inds = [i for i, d in enumerate(dist_list) if d <= r ** 2]
-        return [self.node_list[i] for i in near_inds]
+        return [self.node_list[i] for i in near_inds if self.node_list[i] is not self.goal]
+
+    def _assign_parent(self, node: Node, parent: Node, cost: float) -> None:
+        """统一更新节点父子关系和路径缓存。"""
+        node.parent = parent
+        node.cost = cost
+        node.path_x = parent.path_x.copy()
+        node.path_y = parent.path_y.copy()
+        node.path_x.append(node.x)
+        node.path_y.append(node.y)
+
+    def _propagate_cost_to_leaves(self, parent: Node) -> None:
+        """当节点被重连后，递归更新其子树代价。"""
+        for child in self.node_list:
+            if child.parent is parent:
+                child.cost = self._calc_new_cost(parent, child)
+                child.path_x = parent.path_x.copy()
+                child.path_y = parent.path_y.copy()
+                child.path_x.append(child.x)
+                child.path_y.append(child.y)
+                self._propagate_cost_to_leaves(child)
 
     def _choose_parent(self, new_node: Node, near_nodes: List[Node]) -> Node:
         """
@@ -95,20 +125,12 @@ class RRTStar(RRT):
 
         costs = []
         for near_node in near_nodes:
-            # 计算从near_node到new_node的方向和距离
             d = np.hypot(new_node.x - near_node.x, new_node.y - near_node.y)
 
-            # 如果距离大于步长，跳过
-            if d > self.step_size:
-                costs.append(float('inf'))
-                continue
-
-            # 检查连接是否可行
             if not self._check_collision(near_node, new_node):
                 costs.append(float('inf'))
                 continue
 
-            # 计算代价
             costs.append(near_node.cost + d)
 
         # 找到最小代价的节点
@@ -119,10 +141,7 @@ class RRTStar(RRT):
         min_ind = costs.index(min_cost)
         min_node = near_nodes[min_ind]
 
-        # 更新新节点
-        new_node.parent = min_node
-        new_node.cost = min_cost
-
+        self._assign_parent(new_node, min_node, min_cost)
         return new_node
 
     def _rewire(self, new_node: Node, near_nodes: List[Node]) -> None:
@@ -134,26 +153,13 @@ class RRTStar(RRT):
             near_nodes: 附近节点列表
         """
         for near_node in near_nodes:
-            # 计算如果通过新节点到达near_node的代价
             d = np.hypot(near_node.x - new_node.x, near_node.y - new_node.y)
-
-            # 如果距离大于步长，跳过
-            if d > self.step_size:
-                continue
 
             new_cost = new_node.cost + d
 
-            # 如果新路径代价更低，尝试重新连接
-            if new_cost < near_node.cost:
-                if self._check_collision(new_node, near_node):
-                    # 更新父节点和代价
-                    near_node.parent = new_node
-                    near_node.cost = new_cost
-                    # 更新路径
-                    near_node.path_x = new_node.path_x.copy()
-                    near_node.path_y = new_node.path_y.copy()
-                    near_node.path_x.append(near_node.x)
-                    near_node.path_y.append(near_node.y)
+            if new_cost < near_node.cost and self._check_collision(new_node, near_node):
+                self._assign_parent(near_node, new_node, new_cost)
+                self._propagate_cost_to_leaves(near_node)
 
     def _calc_new_cost(self, from_node: Node, to_node: Node) -> float:
         """
@@ -176,17 +182,12 @@ class RRTStar(RRT):
         返回:
             规划得到的路径，由坐标点组成的列表
         """
-        # 增加搜索半径，提高成功率
-        self.search_radius = max(
-            self.search_radius,
-            np.hypot(self.goal.x - self.start.x,
-                     self.goal.y - self.start.y) * 0.5
-        )
+        self._reset_search_state()
+        return self._plan_iterations(self.max_iterations)
 
-        # 增加重连接因子，提高路径质量
-        self.rewire_factor = max(self.rewire_factor, 2.0)
-
-        for i in range(self.max_iterations):
+    def _plan_iterations(self, iterations: int) -> List[Tuple[float, float]]:
+        """执行指定轮数的 RRT* 扩展。"""
+        for i in range(max(0, iterations)):
             # 随机采样
             if np.random.random() < self.goal_sample_rate:
                 rnd = Node(self.goal.x, self.goal.y)
@@ -226,18 +227,26 @@ class RRTStar(RRT):
                 closest_node = self.node_list[closest_ind]
 
                 # 尝试直接连接
-                if self._is_near_goal(closest_node) and self._check_segment(closest_node, self.goal):
+                if (
+                    closest_node is not self.goal
+                    and self._is_near_goal(closest_node)
+                    and self._check_segment(closest_node, self.goal)
+                ):
                     self._connect_to_goal(closest_node)
-                    return self._extract_path()
+                    path = self._extract_path()
+                    if path:
+                        return path
 
         # 达到最大迭代次数但未找到路径
         # 尝试连接最近的节点到目标
         closest_ind = self._get_nearest_node_index(self.goal)
         closest_node = self.node_list[closest_ind]
 
-        if self._check_segment(closest_node, self.goal):
+        if closest_node is not self.goal and self._check_segment(closest_node, self.goal):
             self._connect_to_goal(closest_node)
-            return self._extract_path()
+            path = self._extract_path()
+            if path:
+                return path
 
         return []
 
@@ -317,11 +326,13 @@ class TimedRRTStar(RRTStar):
             new_x = from_node.x + self.step_size * np.cos(theta)
             new_y = from_node.y + self.step_size * np.sin(theta)
             new_node = Node(new_x, new_y)
+            actual_dist = self.step_size
         else:
             new_node = Node(to_node.x, to_node.y)
+            actual_dist = dist
 
         new_node.parent = from_node
-        new_node.cost = from_node.cost + dist
+        new_node.cost = from_node.cost + actual_dist
         new_node.path_x = from_node.path_x.copy()
         new_node.path_y = from_node.path_y.copy()
         new_node.path_x.append(new_node.x)
@@ -330,6 +341,7 @@ class TimedRRTStar(RRTStar):
 
     def plan(self) -> List[Tuple[float, float]]:
         """规划路径，考虑时间维度"""
+        self._reset_search_state()
         for _ in range(self.max_iterations):
             # 随机采样
             rnd = self._random_node()

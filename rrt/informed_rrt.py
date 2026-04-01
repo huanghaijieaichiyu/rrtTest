@@ -11,7 +11,7 @@ Informed RRT*是RRT*算法的改进版本，通过使用启发式信息来引导
 3. 动态调整采样策略
 """
 
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 import numpy as np
 
 from .rrt_star import RRTStar, Node
@@ -35,6 +35,8 @@ class InformedRRTStar(RRTStar):
         search_radius: float = 50.0,
         rewire_factor: float = 1.5,
         focus_factor: float = 1.0,  # 椭圆焦点缩放因子
+        initial_solution_iterations: Optional[int] = None,
+        optimize_iterations: Optional[int] = None,
         vehicle_width: float = 2.0,  # 车辆宽度
         vehicle_length: float = 4.0  # 车辆长度
     ):
@@ -51,13 +53,22 @@ class InformedRRTStar(RRTStar):
             search_radius: 搜索半径
             rewire_factor: 重连接搜索半径因子
             focus_factor: 椭圆焦点缩放因子，控制采样区域大小
+            initial_solution_iterations: 初始解搜索迭代数
+            optimize_iterations: informed 优化阶段迭代数
             vehicle_width: 车辆宽度
             vehicle_length: 车辆长度
         """
         super().__init__(
-            start, goal, env, step_size,
-            max_iterations, goal_sample_rate, search_radius, rewire_factor,
-            vehicle_width, vehicle_length
+            start=start,
+            goal=goal,
+            env=env,
+            step_size=step_size,
+            max_iterations=max_iterations,
+            goal_sample_rate=goal_sample_rate,
+            search_radius=search_radius,
+            rewire_factor=rewire_factor,
+            vehicle_width=vehicle_width,
+            vehicle_length=vehicle_length,
         )
         self.focus_factor = focus_factor
         self.c_best = float('inf')  # 当前最优路径代价
@@ -65,6 +76,16 @@ class InformedRRTStar(RRTStar):
             self.goal.x - self.start.x,
             self.goal.y - self.start.y
         )
+        default_initial = max(1, int(round(self.max_iterations * 0.6)))
+        if initial_solution_iterations is None and optimize_iterations is None:
+            self.initial_solution_iterations = default_initial
+            self.optimize_iterations = max(0, self.max_iterations - self.initial_solution_iterations)
+        else:
+            self.optimize_iterations = max(0, int(optimize_iterations or 0))
+            self.initial_solution_iterations = max(
+                1,
+                int(initial_solution_iterations if initial_solution_iterations is not None else self.max_iterations - self.optimize_iterations),
+            )
 
     def _calculate_ellipse_parameters(self) -> Tuple[float, float, float, float, float]:
         """
@@ -118,7 +139,7 @@ class InformedRRTStar(RRTStar):
 
         while True:
             # 在单位圆内采样
-            r = np.random.uniform(0, 1)
+            r = np.sqrt(np.random.uniform(0, 1))
             theta = np.random.uniform(0, 2 * np.pi)
             x = r * np.cos(theta)
             y = r * np.sin(theta)
@@ -152,6 +173,38 @@ class InformedRRTStar(RRTStar):
             )
             self.c_best = min(self.c_best, path_cost)
 
+    def _reset_search_state(self) -> None:
+        super()._reset_search_state()
+        self.c_best = float('inf')
+
+    def _capture_best_path(self, node: Node) -> bool:
+        """把当前节点作为候选终点回连到 goal，并安全提取最佳路径。"""
+        goal_was_in_tree = self.goal in self.node_list
+        previous_parent = self.goal.parent
+        previous_cost = self.goal.cost
+        previous_path_x = list(self.goal.path_x)
+        previous_path_y = list(self.goal.path_y)
+
+        self._connect_to_goal(node)
+        path = self._extract_path()
+        if not path:
+            self.goal.parent = previous_parent
+            self.goal.cost = previous_cost
+            self.goal.path_x = previous_path_x
+            self.goal.path_y = previous_path_y
+            if not goal_was_in_tree and self.goal in self.node_list:
+                self.node_list.remove(self.goal)
+            return False
+
+        self._update_best_cost()
+        self.goal.parent = None
+        self.goal.cost = float('inf')
+        self.goal.path_x = []
+        self.goal.path_y = []
+        if self.goal in self.node_list:
+            self.node_list.remove(self.goal)
+        return True
+
     def plan(self) -> List[Tuple[float, float]]:
         """
         执行Informed RRT*路径规划
@@ -159,13 +212,23 @@ class InformedRRTStar(RRTStar):
         返回:
             规划得到的路径，由坐标点组成的列表
         """
-        # 先使用RRT*找到初始路径
-        path = super().plan()
+        self._reset_search_state()
+
+        # 先使用分配给初始解阶段的预算找到一条可用路径
+        path = self._plan_iterations(self.initial_solution_iterations)
         if path:
             self._update_best_cost()
+            if self.goal in self.node_list:
+                self.node_list.remove(self.goal)
+            self.goal.parent = None
+            self.goal.cost = float('inf')
+            self.goal.path_x = []
+            self.goal.path_y = []
+        else:
+            return []
 
         # 继续优化路径
-        remaining_iterations = self.max_iterations
+        remaining_iterations = self.optimize_iterations
         while remaining_iterations > 0:
             # 随机采样
             if np.random.random() < self.goal_sample_rate:
@@ -196,9 +259,7 @@ class InformedRRTStar(RRTStar):
                     # 检查是否到达目标并更新最优路径
                     if self._is_near_goal(new_node):
                         if self._check_segment(new_node, self.goal):
-                            self._connect_to_goal(new_node)
-                            path = self._extract_path()
-                            self._update_best_cost()
+                            self._capture_best_path(new_node)
 
             remaining_iterations -= 1
 

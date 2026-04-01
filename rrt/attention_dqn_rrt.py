@@ -824,6 +824,7 @@ class AttentionDQNRRT(RRTStar):
     def plan(self):
         """规划路径，优化停车动作"""
         try:
+            self.path = []
             # 初始化路径
             self.path_history = [self.start_node]
             current_node = self.start_node

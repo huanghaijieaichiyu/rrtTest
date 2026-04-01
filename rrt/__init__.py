@@ -25,6 +25,7 @@ from .dstar_lite import DStarLite
 from .theta_star import ThetaStar
 from .rl_planner import RLPathPlanner
 from .ppo_planner import PPOPathPlanner
+from .planner_factory import create_planner, get_algorithm_specific_params, get_planner_class
 
 __all__ = [
     'RRT',
@@ -35,5 +36,8 @@ __all__ = [
     'DStarLite',
     'ThetaStar',
     'RLPathPlanner',
-    'PPOPathPlanner'
+    'PPOPathPlanner',
+    'create_planner',
+    'get_algorithm_specific_params',
+    'get_planner_class'
 ]

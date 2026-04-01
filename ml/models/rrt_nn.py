@@ -22,8 +22,15 @@ from rrt.rrt_base import Node
 class SamplingNetwork(nn.Module):
     """采样网络，用于生成更有效的采样点"""
 
-    def __init__(self, state_dim: int = 4, hidden_dim: int = 128,
-                 output_dim: int = 2):
+    def __init__(
+        self,
+        state_dim: int = 4,
+        hidden_dim: int = 128,
+        output_dim: int = 2,
+        hidden_sizes: Optional[List[int]] = None,
+        activation: str = 'relu',
+        use_batch_norm: bool = False,
+    ):
         """
         初始化采样网络
 
@@ -33,6 +40,11 @@ class SamplingNetwork(nn.Module):
             output_dim: 输出维度
         """
         super().__init__()
+
+        if hidden_sizes:
+            hidden_dim = hidden_sizes[0]
+        self.activation_name = activation
+        self.use_batch_norm = use_batch_norm
 
         # 状态编码器
         self.state_encoder = nn.Sequential(
@@ -88,6 +100,133 @@ class SamplingNetwork(nn.Module):
         samples = self.fusion(combined)
 
         return samples
+
+    def sample(
+        self,
+        start: Tuple[float, float],
+        goal: Tuple[float, float],
+        width: float,
+        height: float,
+        device: Optional[Union[str, torch.device]] = None,
+        num_samples: int = 1,
+    ) -> torch.Tensor:
+        """
+        兼容旧 demo 的采样接口。
+
+        当前仓库没有训练好的采样模型时，这里退化为带轻微目标偏置的启发式采样，
+        保证 demo 可以正常运行。
+        """
+        del device
+
+        start_array = np.asarray(start, dtype=np.float32)
+        goal_array = np.asarray(goal, dtype=np.float32)
+        midpoint = (start_array + goal_array) / 2.0
+        spread = np.asarray([max(width, 1.0), max(height, 1.0)], dtype=np.float32) * 0.2
+
+        samples = []
+        for _ in range(max(1, num_samples)):
+            if np.random.random() < 0.4:
+                point = midpoint + np.random.normal(loc=0.0, scale=spread, size=2)
+            else:
+                point = np.array(
+                    [
+                        np.random.uniform(0.0, max(width, 1.0)),
+                        np.random.uniform(0.0, max(height, 1.0)),
+                    ],
+                    dtype=np.float32,
+                )
+            point[0] = np.clip(point[0], 0.0, max(width, 1.0))
+            point[1] = np.clip(point[1], 0.0, max(height, 1.0))
+            samples.append(point)
+
+        return torch.tensor(np.asarray(samples), dtype=torch.float32)
+
+
+class CollisionNet(nn.Module):
+    """旧版 demo 兼容层：碰撞预测网络。"""
+
+    def __init__(
+        self,
+        input_dim: int = 4,
+        hidden_sizes: Optional[List[int]] = None,
+        use_batch_norm: bool = False,
+    ):
+        super().__init__()
+        hidden_sizes = hidden_sizes or [64, 32]
+
+        layers = []
+        previous_dim = input_dim
+        for hidden_dim in hidden_sizes:
+            layers.append(nn.Linear(previous_dim, hidden_dim))
+            if use_batch_norm:
+                layers.append(nn.BatchNorm1d(hidden_dim))
+            layers.append(nn.ReLU())
+            previous_dim = hidden_dim
+        layers.append(nn.Linear(previous_dim, 1))
+        self.network = nn.Sequential(*layers)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return torch.sigmoid(self.network(x))
+
+    def predict_collision(
+        self,
+        start: Tuple[float, float],
+        end: Tuple[float, float],
+        width: float,
+        height: float,
+        device: Optional[Union[str, torch.device]] = None,
+    ) -> bool:
+        """
+        兼容旧 demo 的预测接口。
+
+        当前默认返回保守的“未判定碰撞”，把最终判断交给真实环境检测，
+        这样不会引入错误的假阳性阻塞规划。
+        """
+        del start, end, width, height, device
+        return False
+
+
+class HeuristicNet(nn.Module):
+    """旧版 demo 兼容层：启发式代价网络。"""
+
+    def __init__(
+        self,
+        input_dim: int = 4,
+        hidden_sizes: Optional[List[int]] = None,
+        use_batch_norm: bool = False,
+    ):
+        super().__init__()
+        hidden_sizes = hidden_sizes or [64, 32]
+
+        layers = []
+        previous_dim = input_dim
+        for hidden_dim in hidden_sizes:
+            layers.append(nn.Linear(previous_dim, hidden_dim))
+            if use_batch_norm:
+                layers.append(nn.BatchNorm1d(hidden_dim))
+            layers.append(nn.ReLU())
+            previous_dim = hidden_dim
+        layers.append(nn.Linear(previous_dim, 1))
+        self.network = nn.Sequential(*layers)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.network(x)
+
+    def estimate_cost(
+        self,
+        node_pos: Tuple[float, float],
+        goal_pos: Tuple[float, float],
+        width: float,
+        height: float,
+        device: Optional[Union[str, torch.device]] = None,
+    ) -> float:
+        """
+        兼容旧 demo 的启发式接口。
+
+        在没有训练权重时，退化为欧几里得距离，保持行为稳定。
+        """
+        del width, height, device
+        return float(np.hypot(goal_pos[0] - node_pos[0], goal_pos[1] - node_pos[1]))
 
 
 class EvaluationNetwork(nn.Module):

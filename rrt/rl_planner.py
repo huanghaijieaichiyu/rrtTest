@@ -16,16 +16,18 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from dataclasses import dataclass
 
 # 导入基础RRT类用于保持接口一致
 from .rrt_base import Node
 
 
-@dataclass
 class RLNode(Node):
     """强化学习路径规划节点"""
-    value: float = 0.0  # 节点的价值估计
+
+    def __init__(self, x: float, y: float, parent: Optional[Node] = None, value: float = 0.0):
+        super().__init__(x, y)
+        self.parent = parent
+        self.value = value
 
 
 class PolicyNetwork(nn.Module):
@@ -90,6 +92,8 @@ class RLPathPlanner:
         model_path: Optional[str] = None,
         resolution: float = 1.0,
         max_steps: int = 1000,
+        vehicle_width: float = 2.0,
+        vehicle_length: float = 4.0,
         device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
     ):
         """
@@ -110,6 +114,8 @@ class RLPathPlanner:
         self.resolution = resolution
         self.max_steps = max_steps
         self.device = device
+        self.vehicle_width = vehicle_width
+        self.vehicle_length = vehicle_length
 
         # 计算区域边界
         self.min_x = 0
@@ -132,11 +138,11 @@ class RLPathPlanner:
             input_dim=self._get_state_dim(),
             hidden_dim=128,
             output_dim=len(self.actions)
-        )
+        ).to(self.device)
         self.value_net = ValueNetwork(
             input_dim=self._get_state_dim(),
             hidden_dim=128
-        )
+        ).to(self.device)
 
         if model_path:
             self.load_model(model_path)
@@ -193,7 +199,11 @@ class RLPathPlanner:
                     state.append(1.0)
                 else:
                     # 检查是否是障碍物
-                    is_obstacle = self.env.check_collision((grid_x, grid_y))
+                    is_obstacle = self.env.check_collision(
+                        (grid_x, grid_y),
+                        self.vehicle_width,
+                        self.vehicle_length,
+                    )
                     state.append(1.0 if is_obstacle else 0.0)
 
         return torch.tensor(state, dtype=torch.float32).to(self.device)
@@ -234,6 +244,11 @@ class RLPathPlanner:
         返回:
             规划得到的路径，由坐标点组成的列表
         """
+        self.node_list = []
+        self.start.parent = None
+        self.start.path_x = [self.start.x]
+        self.start.path_y = [self.start.y]
+
         current = self.start
         self.node_list.append(current)
 
@@ -274,7 +289,7 @@ class RLPathPlanner:
                     return [(x, y) for x, y in zip(current.path_x, current.path_y)]
 
             # 检查是否碰撞
-            if self.env.check_collision((new_x, new_y)):
+            if self.env.check_collision((new_x, new_y), self.vehicle_width, self.vehicle_length):
                 # 碰撞，尝试其他动作
                 action_probs[action_idx] = 0
                 if torch.sum(action_probs) > 0:
@@ -285,7 +300,7 @@ class RLPathPlanner:
                     new_y = current.y + dy * self.resolution
 
                     # 再次检查是否碰撞
-                    if self.env.check_collision((new_x, new_y)):
+                    if self.env.check_collision((new_x, new_y), self.vehicle_width, self.vehicle_length):
                         # 仍然碰撞，返回当前路径
                         return [(x, y) for x, y in zip(current.path_x, current.path_y)]
                 else:

@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "neural-rrt"
+version = "0.1.0"
+description = "Neural network enhanced RRT path planning"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+  { name = "Huang xiaohai", email = "huauangxiaohai99@126.com" },
+]
+dependencies = [
+  "matplotlib",
+  "numpy",
+  "pygame",
+  "pyyaml",
+  "shapely",
+  "torch",
+]
+
+[project.optional-dependencies]
+dev = [
+  "black>=22.3.0",
+  "flake8>=4.0.0",
+  "gymnasium>=0.29.0",
+  "mypy>=0.950",
+  "pandas>=1.3.0",
+  "pytest>=7.0.0",
+  "scikit-learn>=1.0.0",
+  "stable-baselines3>=2.0.0",
+  "tensorboard>=2.8.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["ml*", "rrt*", "simulation*", "utils*"]
